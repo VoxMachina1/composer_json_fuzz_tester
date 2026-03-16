@@ -1,0 +1,16 @@
+# Ignore virtual environments
+.venv/
+venv/
+env/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore API Keys (CRITICAL)
+strategy_engine/.env
+.env
+
+# Ignore large downloaded datasets and generated results
+strategy_engine/data/*.csv
+strategy_engine/results/*.csv

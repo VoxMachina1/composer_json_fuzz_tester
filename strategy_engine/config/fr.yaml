@@ -1,0 +1,17 @@
+signal_assets: ["spy", "spyv", "ioo", "vtv", "qqq", "qqqe", "xlf", "xlk", "xle", "xly", "xlp", "tlt", "uso", "corp", "gld"]
+target_assets: ["VIXY", "TQQQ", "SPXL", "FAS", "TECL", "DIG", "WANT", "UGE", "TMF"]
+benchmark_asset: "SPY"
+
+indicator: "RSI"
+indicator_period: 10
+
+signal_operator: ">="
+threshold_start: 50.0
+threshold_end: 90.0
+threshold_step: 0.5
+
+preconditions: []
+
+date_range:
+  start: "1950-01-01"
+  end: "2026-03-15"
