@@ -19,71 +19,42 @@ except ImportError:
     from .strategy_engine import calculate_asset_returns, calculate_strategy_returns, filter_date_range, calculate_equity_curves
 
 def calculate_metrics(df, strategy_params):
-    """
-    Computes performance metrics from the backtest DataFrame.
-    Returns a dictionary representing a single row of results.
-    """
     metrics = strategy_params.copy()
-    
-    # Handle empty dataframe edge case
-    if df.empty:
-        return metrics
+    if df.empty: return metrics
         
     total_days = len(df)
     active_days = df[df['signal_active'] == 1]
+    total_trades = len(active_days) 
     
-    # 1. Trade & Holding Stats
-    total_trades = len(active_days)
-    
-    # Win rate strictly based on active days
     if total_trades > 0:
         win_rate = len(active_days[active_days['strategy_return'] > 0]) / total_trades
         avg_return = active_days['strategy_return'].mean()
-        
-        # Calculate streaks for average hold days
-        # A streak starts when signal is 1 and previous day is 0
         streak_starts = ((df['signal_active'] == 1) & (df['signal_active'].shift(1) != 1)).sum()
         avg_hold_days = total_trades / streak_starts if streak_starts > 0 else 0
     else:
-        win_rate = 0.0
-        avg_return = 0.0
-        avg_hold_days = 0.0
+        win_rate = 0.0; avg_return = 0.0; avg_hold_days = 0.0
 
-    # 2. Return Stats
     final_equity = df['strategy_equity'].iloc[-1]
     total_return = final_equity - 1.0
-    annualized_return = (final_equity ** (252 / total_days)) - 1.0 if total_days > 0 else 0.0
+    annualized_return = (final_equity ** (252 / total_days)) - 1.0 if total_days > 0 and final_equity > 0 else 0.0
     
-    # 3. Risk Metrics (using 3% annualized risk-free rate)
-    rf_daily = 0.03 / 252
+    # Use dynamic Risk-Free Rate
+    rf_annual = strategy_params.get('risk_free_rate', 0.03)
+    rf_daily = rf_annual / 252
+    
     excess_returns = df['strategy_return'] - rf_daily
     strat_std = df['strategy_return'].std()
-    
-    sharpe_ratio = 0.0
-    if strat_std > 0:
-        sharpe_ratio = (excess_returns.mean() / strat_std) * np.sqrt(252)
+    sharpe_ratio = (excess_returns.mean() / strat_std) * np.sqrt(252) if strat_std > 0 else 0.0
         
     downside_returns = df['strategy_return'][df['strategy_return'] < 0]
     downside_std = downside_returns.std()
-    
-    sortino_ratio = 0.0
-    if len(downside_returns) > 0 and downside_std > 0:
-        sortino_ratio = (excess_returns.mean() / downside_std) * np.sqrt(252)
+    sortino_ratio = (excess_returns.mean() / downside_std) * np.sqrt(252) if len(downside_returns) > 0 and downside_std > 0 else 0.0
         
-    # Drawdown
     rolling_max = df['strategy_equity'].cummax()
     drawdown = (df['strategy_equity'] / rolling_max) - 1.0
     max_drawdown = drawdown.min()
-    
-    calmar_ratio = 0.0
-    if max_drawdown < 0:
-        calmar_ratio = annualized_return / abs(max_drawdown)
+    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
         
-    # 4. Benchmark Stats
-    benchmark_avg_return = df['benchmark_return'].mean()
-    benchmark_median_return = df['benchmark_return'].median()
-    
-    # Populate dictionary
     metrics.update({
         'Total_Trades': total_trades,
         'Win_Rate': round(win_rate, 4),
@@ -96,10 +67,9 @@ def calculate_metrics(df, strategy_params):
         'Max_Drawdown': round(max_drawdown, 4),
         'Final_Equity': round(final_equity, 4),
         'Avg_Hold_Days': round(avg_hold_days, 2),
-        'Benchmark_Avg_Return': round(benchmark_avg_return, 6),
-        'Benchmark_Median_Return': round(benchmark_median_return, 6)
+        'Benchmark_Avg_Return': round(df['benchmark_return'].mean(), 6),
+        'Benchmark_Median_Return': round(df['benchmark_return'].median(), 6)
     })
-    
     return metrics
 
 # --- TEST ---

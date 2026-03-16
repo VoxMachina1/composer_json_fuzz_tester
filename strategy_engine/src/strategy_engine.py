@@ -26,20 +26,25 @@ def calculate_asset_returns(df):
     df = df.dropna(subset=['target_return', 'benchmark_return']).reset_index(drop=True)
     return df
 
-def calculate_strategy_returns(df):
-    """
-    Combines signals with asset returns to generate the strategy's daily returns.
-    100% Target Asset when Signal is 1.
-    100% Benchmark Asset when Signal is 0.
-    """
+def calculate_strategy_returns(df, slippage_bps=0.0):
     df = df.copy()
     
-    # Vectorized conditional assignment: if signal_active == 1, target_return, else benchmark_return
     df['strategy_return'] = np.where(
         df['signal_active'] == 1,
         df['target_return'],
         df['benchmark_return']
     )
+    
+    if slippage_bps > 0:
+        slippage_dec = slippage_bps / 10000.0
+        
+        # A state change means we sell one asset and buy another (2 trades)
+        # diff() calculates the change. Row 0 is NaN (so it's just 1 entry trade).
+        state_changes = df['signal_active'].diff().abs()
+        trade_multiplier = np.where(state_changes.isna(), 1, np.where(state_changes > 0, 2, 0))
+        
+        df['strategy_return'] -= (slippage_dec * trade_multiplier)
+        
     return df
 
 def filter_date_range(df, start_date, end_date):

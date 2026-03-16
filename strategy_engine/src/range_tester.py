@@ -46,28 +46,20 @@ def generate_asset_combinations(signal_assets, target_assets, benchmark_asset):
     return combinations
 
 def run_threshold_range_tests(df, base_params, thresholds, sig_col, sig_op, start_date, end_date):
-    """
-    Loops through all thresholds for a single asset combination.
-    Returns a list of metric dictionaries (one per threshold).
-    """
     results =[]
+    slippage = base_params.get("slippage_bps", 0.0)
     
     for thresh in thresholds:
-        # 1. Update params for this specific run
         run_params = base_params.copy()
         run_params['threshold'] = thresh
         
-        # 2. Generate Signals
         test_df = generate_signals(df, sig_col, sig_op, thresh)
-        
-        # 3. Filter to the backtest window
         test_df = filter_date_range(test_df, start_date, end_date)
         
-        # 4. Run Strategy Engine
-        test_df = calculate_strategy_returns(test_df)
+        # Pass the slippage to the strategy engine!
+        test_df = calculate_strategy_returns(test_df, slippage_bps=slippage)
         test_df = calculate_equity_curves(test_df)
         
-        # 5. Calculate Metrics
         run_metrics = calculate_metrics(test_df, run_params)
         results.append(run_metrics)
         

@@ -1,4 +1,5 @@
 import sys
+import argparse
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
@@ -44,28 +45,35 @@ def save_results(results_list, results_dir, run_id, mode="per_strategy"):
 def parse_and_add_precondition_indicators(df, preconditions):
     """
     Dynamically scans preconditions for indicator column names like 'benchmark_SMA_200'.
-    Automatically calculates and adds them to the dataframe so nothing is hardcoded!
+    Automatically calculates and adds them to the dataframe.
     """
     for precond in preconditions:
         for side in['left', 'right']:
             val = precond.get(side, "")
-            # If the value is a string and has exactly two underscores (e.g., signal_RSI_14)
             if isinstance(val, str) and val.count('_') == 2:
                 parts = val.split('_')
                 role, ind_name, period_str = parts[0], parts[1], parts[2]
                 
-                # Verify it matches our supported format
-                if role in ['signal', 'target', 'benchmark'] and ind_name in ['SMA', 'EMA', 'RSI']:
+                if role in ['signal', 'target', 'benchmark'] and ind_name in['SMA', 'EMA', 'RSI']:
                     try:
                         period = int(period_str)
-                        # Only calculate if it's not already in the dataframe
                         if val not in df.columns:
                             df = add_indicator(df, role, ind_name, period)
                     except ValueError:
-                        pass # The last part wasn't an integer, ignore it
+                        pass
     return df
 
 def main():
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(description="Run the Strategy Discovery Engine")
+    parser.add_argument(
+        "--config", "-c", 
+        type=str, 
+        default="config/strategy_config.yaml", 
+        help="Path to the config YAML file (relative to strategy_engine/)"
+    )
+    args = parser.parse_args()
+
     print("="*50)
     print(" STARTING STRATEGY DISCOVERY ENGINE ")
     print("="*50)
@@ -73,15 +81,16 @@ def main():
     data_dir = base_dir / "data"
     results_dir = base_dir / "results"
     
-    # 1. Load Configuration
-    print("\n[1] Loading Configuration...")
-    cfg, api_keys = load_config()
+    # 1. Load Configuration using the provided argument
+    print(f"\n[1] Loading Configuration from {args.config}...")
+    cfg, api_keys = load_config(args.config)
     
-    sig_assets = cfg.get("signal_assets",[])
-    tgt_assets = cfg.get("target_assets",[])
-    bench_asset = cfg.get("benchmark_asset", "SPY")
+    # Make sure all tickers are converted to uppercase just in case they are lowercase in the YAML
+    sig_assets =[t.upper() for t in cfg.get("signal_assets", [])]
+    tgt_assets =[t.upper() for t in cfg.get("target_assets", [])]
+    bench_asset = cfg.get("benchmark_asset", "SPY").upper()
     
-    ind_name = cfg.get("indicator", "RSI")
+    ind_name = cfg.get("indicator", "RSI").upper()
     ind_period = cfg.get("indicator_period", 10)
     sig_op = cfg.get("signal_operator", ">=")
     
@@ -95,8 +104,10 @@ def main():
     
     results_mode = cfg.get("results_mode", "per_strategy")
     
+    # Grab the filename without extension to use in our batch name
+    config_name = Path(args.config).stem
     now_str = datetime.now().strftime("%Y-%m-%d_%H%M")
-    batch_run_id = f"Batch_{ind_name}_{now_str}"
+    batch_run_id = f"Batch_{config_name}_{ind_name}_{now_str}"
     
     # 2. Update Price Data
     print("\n[2] Checking Data Freshness...")
@@ -128,10 +139,7 @@ def main():
         try:
             df = build_master_dataframe(sig, tgt, ben, data_dir)
             
-            # Primary signal indicator
             df = add_indicator(df, "signal", ind_name, ind_period)
-            
-            # Dynamically parse and add ANY indicators required by the preconditions! (NO HARDCODING)
             df = parse_and_add_precondition_indicators(df, preconds)
             
             df = evaluate_preconditions(df, preconds)
@@ -143,7 +151,9 @@ def main():
                 "target_asset": tgt,
                 "benchmark_asset": ben,
                 "indicator": ind_name,
-                "indicator_period": ind_period
+                "indicator_period": ind_period,
+                "slippage_bps": cfg.get("slippage_bps", 0.0),
+                "risk_free_rate": cfg.get("risk_free_rate", 0.03)
             }
             
             results = run_threshold_range_tests(
