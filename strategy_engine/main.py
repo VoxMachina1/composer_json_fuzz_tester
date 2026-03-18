@@ -1,4 +1,5 @@
 import sys
+import re
 import argparse
 import pandas as pd
 from pathlib import Path
@@ -42,29 +43,38 @@ def save_results(results_list, results_dir, run_id, mode="per_strategy"):
         
     return True
 
-def parse_and_add_precondition_indicators(df, preconditions):
+def parse_and_add_precondition_indicators(df, precondition_string):
     """
-    Dynamically scans preconditions for indicator column names like 'benchmark_SMA_200'.
+    Dynamically scans the boolean string for indicator patterns like 'SPY_RSI_10' or 'signal_SMA_200'.
     Automatically calculates and adds them to the dataframe.
     """
-    for precond in preconditions:
-        for side in['left', 'right']:
-            val = precond.get(side, "")
-            if isinstance(val, str) and val.count('_') == 2:
-                parts = val.split('_')
-                role, ind_name, period_str = parts[0], parts[1], parts[2]
+    if not precondition_string or str(precondition_string).strip().lower() in ["", "none", "[]"]:
+        return df
+        
+    # Regex pattern looks for: [Letters]_[SMA/EMA/RSI]_[Numbers]
+    pattern = r'([a-zA-Z]+)_(SMA|EMA|RSI)_(\d+)'
+    matches = re.findall(pattern, str(precondition_string), re.IGNORECASE)
+    
+    for role, ind_name, period_str in matches:
+        try:
+            period = int(period_str)
+            col_name = f"{role}_{ind_name.upper()}_{period}"
+            close_col = f"{role}_close"
+            
+            # Warn if they typo'd a ticker or forgot to put it in filter_assets
+            if close_col not in df.columns:
+                print(f" [!] Warning: Cannot calculate {col_name} because '{close_col}' is missing. Did you add {role} to filter_assets?")
+                continue
                 
-                if role in ['signal', 'target', 'benchmark'] and ind_name in['SMA', 'EMA', 'RSI']:
-                    try:
-                        period = int(period_str)
-                        if val not in df.columns:
-                            df = add_indicator(df, role, ind_name, period)
-                    except ValueError:
-                        pass
+            # Only calculate if it's not already in the dataframe
+            if col_name not in df.columns:
+                df = add_indicator(df, role, ind_name.upper(), period)
+        except Exception as e:
+            print(f" [!] Error calculating precondition indicator {role}_{ind_name}_{period_str}: {e}")
+            
     return df
 
 def main():
-    # Set up command line argument parsing
     parser = argparse.ArgumentParser(description="Run the Strategy Discovery Engine")
     parser.add_argument(
         "--config", "-c", 
@@ -81,37 +91,40 @@ def main():
     data_dir = base_dir / "data"
     results_dir = base_dir / "results"
     
-    # 1. Load Configuration using the provided argument
+    # 1. Load Configuration
     print(f"\n[1] Loading Configuration from {args.config}...")
     cfg, api_keys = load_config(args.config)
     
-    # Make sure all tickers are converted to uppercase just in case they are lowercase in the YAML
-    sig_assets =[t.upper() for t in cfg.get("signal_assets", [])]
-    tgt_assets =[t.upper() for t in cfg.get("target_assets", [])]
+    sig_assets = [t.upper() for t in cfg.get("signal_assets", [])]
+    tgt_assets = [t.upper() for t in cfg.get("target_assets", [])]
     bench_asset = cfg.get("benchmark_asset", "SPY").upper()
+    
+    # Load our new filter_assets list
+    filter_assets = [t.upper() for t in cfg.get("filter_assets", [])]
     
     ind_name = cfg.get("indicator", "RSI").upper()
     ind_period = cfg.get("indicator_period", 10)
-    sig_op = cfg.get("signal_operator", ">=")
+    sig_op = cfg.get("signal_operator", ">")
     
     t_start = cfg.get("threshold_start", 50.0)
     t_end = cfg.get("threshold_end", 80.0)
     t_step = cfg.get("threshold_step", 0.5)
     
-    preconds = cfg["preconditions"] if "preconditions" in cfg else[]
+    # Load our new boolean string
+    preconds_str = cfg.get("preconditions", "")
+    
     start_date = cfg.get("date_range", {}).get("start", "2020-01-01")
     end_date = cfg.get("date_range", {}).get("end", "2026-01-01")
     
     results_mode = cfg.get("results_mode", "per_strategy")
     
-    # Grab the filename without extension to use in our batch name
     config_name = Path(args.config).stem
     now_str = datetime.now().strftime("%Y-%m-%d_%H%M")
     batch_run_id = f"Batch_{config_name}_{ind_name}_{now_str}"
     
-    # 2. Update Price Data
+    # 2. Update Price Data (Now includes filter_assets!)
     print("\n[2] Checking Data Freshness...")
-    all_tickers = list(set(sig_assets + tgt_assets + [bench_asset]))
+    all_tickers = list(set(sig_assets + tgt_assets + [bench_asset] + filter_assets))
     check_freshness_and_update(all_tickers, api_keys, data_dir)
     
     # 3. Generate Combinations & Thresholds
@@ -123,6 +136,8 @@ def main():
     print(f" -> Found {len(combinations)} valid asset combinations.")
     print(f" -> Testing {len(thresholds)} thresholds per combination.")
     print(f" -> Total strategy runs queued: {len(combinations) * len(thresholds)}")
+    if preconds_str:
+        print(f" -> Preconditions: '{preconds_str}'")
     
     # 4. Strategy Discovery Loop
     print("\n[4] Executing Strategy Engine...")
@@ -137,12 +152,18 @@ def main():
         print(f"\nEvaluating: Signal={sig} | Target={tgt} | Benchmark={ben}")
         
         try:
-            df = build_master_dataframe(sig, tgt, ben, data_dir)
+            # Pass filter_assets down to the alignment script
+            df = build_master_dataframe(sig, tgt, ben, data_dir, filter_assets=filter_assets)
             
+            # Primary signal indicator
             df = add_indicator(df, "signal", ind_name, ind_period)
-            df = parse_and_add_precondition_indicators(df, preconds)
             
-            df = evaluate_preconditions(df, preconds)
+            # Dynamically parse and add ANY indicators required by the boolean string!
+            df = parse_and_add_precondition_indicators(df, preconds_str)
+            
+            # Evaluate the boolean string
+            df = evaluate_preconditions(df, preconds_str)
+            
             df = calculate_asset_returns(df)
             df = df.dropna().reset_index(drop=True)
             
@@ -152,8 +173,8 @@ def main():
                 "benchmark_asset": ben,
                 "indicator": ind_name,
                 "indicator_period": ind_period,
-                "slippage_bps": cfg.get("slippage_bps", 0.0),
-                "risk_free_rate": cfg.get("risk_free_rate", 0.03)
+                "slippage_bps": cfg.get("slippage_bps", 1.0),
+                "risk_free_rate": cfg.get("risk_free_rate", 0.0)
             }
             
             results = run_threshold_range_tests(

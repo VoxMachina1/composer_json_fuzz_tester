@@ -1,0 +1,26 @@
+signal_assets: ["spy", "qqq", "xlf"]
+target_assets: ["VIXY", "TQQQ"]
+benchmark_asset: "SPY"
+
+# Market Regime Filters (Downloaded and merged into every run!)
+filter_assets: ["SPY", "QQQ"]
+
+indicator: "RSI"
+indicator_period: 10
+
+signal_operator: ">"
+threshold_start: 50.0
+threshold_end: 80.0
+threshold_step: 0.5
+
+slippage_bps: 1.0
+risk_free_rate: 0.0
+
+# Boolean String Logic (Use AND, OR, and parentheses!)
+preconditions: "SPY_RSI_10 > 70 and QQQ_RSI_10 > 70"
+
+date_range:
+  start: "2015-01-01"
+  end: "2026-03-15"
+
+results_mode: "per_strategy"

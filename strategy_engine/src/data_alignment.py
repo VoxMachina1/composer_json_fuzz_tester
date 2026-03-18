@@ -16,28 +16,32 @@ def load_ticker_csv(ticker, data_dir):
     df = df.sort_values('date').reset_index(drop=True)
     return df[['date', 'close']]
 
-def build_master_dataframe(signal_ticker, target_ticker, benchmark_ticker, data_dir):
+def build_master_dataframe(signal_ticker, target_ticker, benchmark_ticker, data_dir, filter_assets=None):
     """
-    Loads signal, target, and benchmark CSVs.
-    Renames columns according to the specification.
+    Loads signal, target, benchmark, and any global filter CSVs.
+    Renames columns according to their roles or exact ticker names.
     Merges them into a single aligned DataFrame, dropping any missing dates.
     """
-    # Load individual datasets
-    df_signal = load_ticker_csv(signal_ticker, data_dir)
-    df_target = load_ticker_csv(target_ticker, data_dir)
-    df_bench = load_ticker_csv(benchmark_ticker, data_dir)
+    if filter_assets is None:
+        filter_assets =[]
+        
+    # 1. Load base 3 assets
+    df_signal = load_ticker_csv(signal_ticker, data_dir).rename(columns={'close': 'signal_close'})
+    df_target = load_ticker_csv(target_ticker, data_dir).rename(columns={'close': 'target_close'})
+    df_bench = load_ticker_csv(benchmark_ticker, data_dir).rename(columns={'close': 'benchmark_close'})
     
-    # Rename columns to prevent overlap and match Master DataFrame spec
-    df_signal = df_signal.rename(columns={'close': 'signal_close'})
-    df_target = df_target.rename(columns={'close': 'target_close'})
-    df_bench = df_bench.rename(columns={'close': 'benchmark_close'})
-    
-    # Merge datasets on 'date' using inner join to align perfectly
-    # This automatically sets the start date to max(first_available_date_of_each_ticker)
+    # Merge base 3
     master_df = pd.merge(df_signal, df_target, on='date', how='inner')
     master_df = pd.merge(master_df, df_bench, on='date', how='inner')
     
-    # Drop any rows with missing data
+    # 2. Load and merge filter assets
+    # We use set() to remove duplicates just in case a ticker was listed twice
+    for ticker in set(filter_assets):
+        # We explicitly name these columns by their ticker (e.g., SPY_close)
+        df_filter = load_ticker_csv(ticker, data_dir).rename(columns={'close': f'{ticker}_close'})
+        master_df = pd.merge(master_df, df_filter, on='date', how='inner')
+    
+    # Drop any rows with missing data across all merged assets
     master_df = master_df.dropna().reset_index(drop=True)
     
     return master_df
@@ -48,23 +52,33 @@ if __name__ == "__main__":
     data_directory = base_dir / "data"
     
     try:
-        print("Testing Multi-Asset Merge...")
+        print("Testing Multi-Asset Merge with Filter Assets...")
         
-        # We use QQQ as signal, and SPY as both target and benchmark just to test the merge logic
-        # since we know you have QQQ and SPY downloaded from Step 4.
-        test_signal = "QQQ"
-        test_target = "SPY"
+        # Base assets
+        test_signal = "XLF" # Or QQQ if you don't have XLF downloaded
+        test_target = "VIXY"
         test_bench = "SPY"
         
-        master = build_master_dataframe(test_signal, test_target, test_bench, data_directory)
+        # New Filter Assets!
+        test_filters = ["SPY", "QQQ"]
         
-        print(f"Successfully merged {test_signal}, {test_target}, and {test_bench}.")
-        print(f"Total Aligned Rows: {len(master)}")
-        print(f"Effective Start Date: {master['date'].min().date()}")
-        print(f"Effective End Date: {master['date'].max().date()}")
-        print("\nMaster DataFrame Head:")
-        print(master.head())
-        print("\nPASS")
+        master = build_master_dataframe(
+            test_signal, test_target, test_bench, data_directory, filter_assets=test_filters
+        )
+        
+        print("\nColumns successfully generated:")
+        print(master.columns.tolist())
+        
+        print("\nMaster DataFrame Head (First 3 rows):")
+        pd.set_option('display.max_columns', None)
+        print(master.head(3))
+        
+        # Verify the custom named columns exist
+        if 'SPY_close' in master.columns and 'QQQ_close' in master.columns:
+            print("\n-> Filter asset columns cleanly added.")
+            print("\nPASS")
+        else:
+            print("\nFAIL: Filter columns missing.")
         
     except Exception as e:
         print(f"FAIL: {e}")
