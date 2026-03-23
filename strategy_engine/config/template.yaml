@@ -1,5 +1,5 @@
 signal_assets: ["spy", "qqq", "xlf"]
-target_assets: ["VIXY", "TQQQ"]
+target_assets: ["UVXY", "BIL",  ]
 benchmark_asset: "SPY"
 
 # Market Regime Filters (Downloaded and merged into every run!)

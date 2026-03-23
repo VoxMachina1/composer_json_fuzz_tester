@@ -37,34 +37,47 @@ EXTRA_SIGNAL_ASSETS = [
 
 RESULTS_DIR = r"C:\Python Projects\rsi_tester\strategy_engine\results"
 
-# Engine settings — match your Composer-validated template
-INDICATOR       = "RSI"
-INDICATOR_PERIOD = 10
-SIGNAL_OPERATOR = ">"
-THRESHOLD_START = 50.0
-THRESHOLD_END   = 80.0
-THRESHOLD_STEP  = 0.5
-SLIPPAGE_BPS    = 1.0
-RISK_FREE_RATE  = 0.0
-BENCHMARK_ASSET = "SPY"
-DATE_START      = "2015-01-01"
-DATE_END        = "2026-03-15"
-
 # ---------------------------------------------------------------------------
 # Path setup — locate the engine's src/ directory relative to this script
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR  = Path(__file__).resolve().parent
-ENGINE_SRC  = SCRIPT_DIR / "strategy_engine" / "src"
-DATA_DIR    = SCRIPT_DIR / "strategy_engine" / "data"
+SCRIPT_DIR     = Path(__file__).resolve().parent
+ENGINE_SRC     = SCRIPT_DIR / "strategy_engine" / "src"
+DATA_DIR       = SCRIPT_DIR / "strategy_engine" / "data"
+TEMPLATE_PATH  = SCRIPT_DIR / "strategy_engine" / "config" / "template.yaml"
 
 if not ENGINE_SRC.exists():
     print(f"ERROR: Engine src/ not found at {ENGINE_SRC}", file=sys.stderr)
     sys.exit(1)
 
+if not TEMPLATE_PATH.exists():
+    print(f"ERROR: Template config not found at {TEMPLATE_PATH}", file=sys.stderr)
+    sys.exit(1)
+
 sys.path.insert(0, str(ENGINE_SRC))
 PATHFINDER_DIR = SCRIPT_DIR / "pathfinder"
 sys.path.insert(0, str(PATHFINDER_DIR))
+
+# ---------------------------------------------------------------------------
+# Load engine settings from template.yaml
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+with open(TEMPLATE_PATH, "r") as _f:
+    _tmpl = _yaml.safe_load(_f)
+
+BENCHMARK_ASSET   = _tmpl.get("benchmark_asset", "SPY")
+TEMPLATE_TARGETS  = [t.upper() for t in _tmpl.get("target_assets", [])]
+INDICATOR        = _tmpl.get("indicator", "RSI")
+INDICATOR_PERIOD = _tmpl.get("indicator_period", 10)
+SIGNAL_OPERATOR  = _tmpl.get("signal_operator", ">")
+THRESHOLD_START  = _tmpl.get("threshold_start", 50.0)
+THRESHOLD_END    = _tmpl.get("threshold_end", 80.0)
+THRESHOLD_STEP   = _tmpl.get("threshold_step", 0.5)
+SLIPPAGE_BPS     = _tmpl.get("slippage_bps", 1.0)
+RISK_FREE_RATE   = _tmpl.get("risk_free_rate", 0.0)
+DATE_START       = _tmpl.get("date_range", {}).get("start", "2015-01-01")
+DATE_END         = _tmpl.get("date_range", {}).get("end", "2026-03-15")
 
 # ---------------------------------------------------------------------------
 # Imports — engine modules and path extractor
@@ -110,11 +123,11 @@ def extract_tickers_from_precondition(engine_precondition):
 # Helper: build a config dict for one path + one signal asset
 # ---------------------------------------------------------------------------
 
-def build_config(path, signal_asset, filter_assets):
+def build_config(path, signal_asset, target_asset, filter_assets, benchmark_asset):
     return {
         "signal_assets":    [signal_asset],
-        "target_assets":    [path["endpoint"]],
-        "benchmark_asset":  BENCHMARK_ASSET,
+        "target_assets":    [target_asset],
+        "benchmark_asset":  benchmark_asset,
         "filter_assets":    list(filter_assets),
         "indicator":        INDICATOR,
         "indicator_period": INDICATOR_PERIOD,
@@ -143,8 +156,10 @@ def run_pipeline(config, api_keys, path_meta):
     path_meta: dict with sub_strategy, conditions, engine_precondition, endpoint
     """
     signal_asset  = config["signal_assets"][0]
-    target_asset  = config["target_assets"][0]
-    filter_assets = config.get("filter_assets", [])
+    target_asset     = config["target_assets"][0]
+    # target_asset is the candidate replacement asset being tested
+    benchmark_asset  = config["benchmark_asset"]
+    filter_assets    = config.get("filter_assets", [])
     preconds      = config.get("preconditions")
     ind_name      = config["indicator"]
     ind_period    = config["indicator_period"]
@@ -161,7 +176,7 @@ def run_pipeline(config, api_keys, path_meta):
 
     # Build master dataframe once for this signal/target/filter combination
     df = build_master_dataframe(
-        signal_asset, target_asset, BENCHMARK_ASSET,
+        signal_asset, target_asset, benchmark_asset,
         DATA_DIR, filter_assets=filter_assets
     )
     df = add_indicator(df, "signal", ind_name, ind_period)
@@ -199,6 +214,8 @@ def run_pipeline(config, api_keys, path_meta):
             "conditions":          " AND ".join(path_meta["conditions"]),
             "engine_precondition": path_meta["engine_precondition"],
             "endpoint":            path_meta["endpoint"],
+            "benchmark_asset":     benchmark_asset,
+            "target_asset":        target_asset,
             "signal_asset":        signal_asset,
             "threshold":           thresh,
             "risk_free_rate":      config["risk_free_rate"],
@@ -240,7 +257,8 @@ def main():
     # --- Step 3: Ensure all required data is fresh ---
     # Collect every ticker that will be needed across all paths
     all_tickers = set()
-    all_tickers.add(BENCHMARK_ASSET)
+    # Always ensure SPY data is fresh as it commonly appears in preconditions
+    all_tickers.add("SPY")
     for path in path_results:
         all_tickers.add(path["endpoint"])
         all_tickers.update(extract_tickers_from_precondition(path["engine_precondition"]))
@@ -250,6 +268,10 @@ def main():
     check_freshness_and_update(list(all_tickers), api_keys, DATA_DIR)
 
     # --- Step 4: Run engine for each path x signal combination ---
+    # Collect all endpoint tickers from the strategy to use as target candidates
+    strategy_endpoints = {p["endpoint"].upper() for p in path_results}
+    all_target_assets = sorted(strategy_endpoints | set(TEMPLATE_TARGETS))
+
     all_rows = []
     total_runs = 0
     failed_runs = 0
@@ -266,23 +288,31 @@ def main():
         )
         signal_assets.sort()
 
-        # Filter assets are whatever appears in the precondition
-        filter_assets = list(precond_tickers)
+        # Filter assets: tickers from precondition + the endpoint itself
+        # (endpoint serves as benchmark and needs its price column loaded)
+        filter_assets = list(precond_tickers | {endpoint.upper()})
 
         print(f"\n[{path_idx + 1}/{len(path_results)}] "
               f"{path['sub_strategy']} -> {endpoint} "
               f"({len(signal_assets)} signals)")
 
-        for signal in signal_assets:
-            total_runs += 1
-            try:
-                config = build_config(path, signal, filter_assets)
-                rows = run_pipeline(config, api_keys, path)
-                all_rows.extend(rows)
-                print(f"  {signal} -> {len(rows)} threshold results")
-            except Exception as e:
-                failed_runs += 1
-                print(f"  {signal} -> FAILED: {e}", file=sys.stderr)
+        # Target candidates: all strategy endpoints + template targets, minus the benchmark
+        target_candidates = [t for t in all_target_assets if t != endpoint.upper()]
+
+        for target in target_candidates:
+            for signal in signal_assets:
+                total_runs += 1
+                try:
+                    config = build_config(
+                        path, signal, target,
+                        filter_assets, benchmark_asset=path["endpoint"]
+                    )
+                    rows = run_pipeline(config, api_keys, path)
+                    all_rows.extend(rows)
+                    print(f"  {target} | {signal} -> {len(rows)} threshold results")
+                except Exception as e:
+                    failed_runs += 1
+                    print(f"  {target} | {signal} -> FAILED: {e}", file=sys.stderr)
 
     # --- Step 5: Write combined CSV ---
     if not all_rows:
@@ -297,7 +327,7 @@ def main():
     # Determine column order — path metadata first, then metrics
     meta_cols = [
         "sub_strategy", "conditions", "engine_precondition",
-        "endpoint", "signal_asset", "threshold",
+        "endpoint", "benchmark_asset", "target_asset", "signal_asset", "threshold",
         "slippage_bps", "risk_free_rate"
     ]
     metric_cols = [
