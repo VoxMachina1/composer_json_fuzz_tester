@@ -9,8 +9,8 @@ indicator: "RSI"
 indicator_period: 10
 
 signal_operator: ">"
-threshold_start: 50.0
-threshold_end: 80.0
+threshold_start: 55.0
+threshold_end: 90.0
 threshold_step: 0.5
 
 slippage_bps: 1.0

@@ -42,6 +42,10 @@ def calculate_rsi(series, period):
     
     return rsi
 
+def calculate_cumret(series, period):
+    """Cumulative Return over a rolling window (percentage, not decimal)."""
+    return series.pct_change(periods=period) * 100
+
 def add_indicator(df, asset_role, indicator_name, period):
     """
     Calculates a technical indicator and appends it to the Master DataFrame.
@@ -61,6 +65,8 @@ def add_indicator(df, asset_role, indicator_name, period):
         df[indicator_col] = calculate_sma(df[price_col], period)
     elif indicator_name.upper() == "EMA":
         df[indicator_col] = calculate_ema(df[price_col], period)
+    elif indicator_name.upper() == "CUMRET":
+        df[indicator_col] = calculate_cumret(df[price_col], period)
     else:
         raise ValueError(f"Unsupported indicator: {indicator_name}")
         

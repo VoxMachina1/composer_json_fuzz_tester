@@ -14,3 +14,7 @@ strategy_engine/.env
 # Ignore large downloaded datasets and generated results
 strategy_engine/data/*.csv
 strategy_engine/results/*.csv
+
+# Ignore pathfinder generated output files
+pathfinder/paths*.txt
+pathfinder/tree.txt

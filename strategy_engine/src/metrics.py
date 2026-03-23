@@ -59,6 +59,9 @@ def calculate_metrics(df, strategy_params):
         'Total_Trades': total_trades,
         'Win_Rate': round(win_rate, 4),
         'Avg_Return': round(avg_return, 6),
+        'Median_Return': round(active_days['strategy_return'].median(), 6) if total_trades > 0 else 0.0,
+        'Benchmark_Avg_Return': round(active_days['benchmark_return'].mean(), 6) if total_trades > 0 else 0.0,
+        'Benchmark_Median_Return': round(active_days['benchmark_return'].median(), 6) if total_trades > 0 else 0.0,
         'Total_Return': round(total_return, 4),
         'Annualized_Return': round(annualized_return, 4),
         'Sharpe_Ratio': round(sharpe_ratio, 4),
@@ -67,8 +70,6 @@ def calculate_metrics(df, strategy_params):
         'Max_Drawdown': round(max_drawdown, 4),
         'Final_Equity': round(final_equity, 4),
         'Avg_Hold_Days': round(avg_hold_days, 2),
-        'Benchmark_Avg_Return': round(df['benchmark_return'].mean(), 6),
-        'Benchmark_Median_Return': round(df['benchmark_return'].median(), 6)
     })
     return metrics
 
