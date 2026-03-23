@@ -11,13 +11,27 @@ Each path is stored with two parallel condition representations:
 The engine_precondition field on each result is the engine_conds joined
 with ' and ', ready to drop directly into a YAML preconditions field.
 
+The node_id field records the JSON node ID of the leaf asset node,
+used by strategy_inserter.py to locate the exact insertion point.
+
+Canonical input:  pathfinder/strategy.json  (relative to project root)
+Canonical output: pathfinder/paths.txt      (written automatically + stdout)
+
 Usage:
-    python strategy_paths.py strategy.json
-    python strategy_paths.py strategy.json > paths.txt
+    python pathfinder/strategy_paths.py
 """
 
 import json
 import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Canonical paths — resolved relative to this script's location (pathfinder/)
+# ---------------------------------------------------------------------------
+
+_HERE         = Path(__file__).resolve().parent          # pathfinder/
+STRATEGY_JSON = _HERE / "strategy.json"
+PATHS_TXT     = _HERE / "paths.txt"
 
 # ---------------------------------------------------------------------------
 # Formatting helpers — human-readable
@@ -117,7 +131,6 @@ def _engine_side(node, prefix):
     eng_fn  = FN_ENGINE.get(fn_raw)
 
     if eng_fn is None:
-        # current-price: no indicator, no period
         return f"{ticker}_close"
     else:
         return f"{ticker}_{eng_fn}_{window}"
@@ -196,6 +209,7 @@ def _expand_filter(node, conditions, engine_conds, sub_strategy, results):
             "engine_conds":        list(engine_conds) + [engine_cond],
             "engine_precondition": " and ".join(list(engine_conds) + [engine_cond]),
             "endpoint":            winner,
+            "node_id":             child.get("id", "UNKNOWN"),
         })
 
 
@@ -225,6 +239,7 @@ def walk(node, conditions, engine_conds, sub_strategy, results):
             "engine_conds":        list(engine_conds),
             "engine_precondition": " and ".join(engine_conds),
             "endpoint":            node.get("ticker", "UNKNOWN"),
+            "node_id":             node.get("id", "UNKNOWN"),
         })
         return
 
@@ -265,6 +280,7 @@ def walk(node, conditions, engine_conds, sub_strategy, results):
                 "engine_conds":        list(engine_conds) + ["[condition false, no else]"],
                 "engine_precondition": "",
                 "endpoint":            "UNALLOCATED",
+                "node_id":             None,
             })
         return
 
@@ -287,10 +303,26 @@ def format_path(path):
     sub   = path["sub_strategy"]
     conds = path["conditions"]
     end   = path["endpoint"]
+    nid   = path.get("node_id", "?")
     if conds:
-        return f"[{sub}] IF {' AND '.join(conds)} -> {end}"
+        return f"[{sub}] IF {' AND '.join(conds)} -> {end}  (node_id: {nid})"
     else:
-        return f"[{sub}] (no conditions) -> {end}"
+        return f"[{sub}] (no conditions) -> {end}  (node_id: {nid})"
+
+
+# ---------------------------------------------------------------------------
+# Public API — used by run_analysis.py and strategy_inserter.py
+# ---------------------------------------------------------------------------
+
+def extract_paths(strategy_json):
+    """
+    Walk a loaded strategy JSON dict and return the full list of path dicts.
+    Each dict contains: sub_strategy, conditions, engine_conds,
+    engine_precondition, endpoint, node_id.
+    """
+    results = []
+    walk(strategy_json, conditions=[], engine_conds=[], sub_strategy=None, results=results)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -298,30 +330,40 @@ def format_path(path):
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python strategy_paths.py <strategy.json>", file=sys.stderr)
+    if not STRATEGY_JSON.exists():
+        print(f"ERROR: Strategy JSON not found at {STRATEGY_JSON}", file=sys.stderr)
         sys.exit(1)
 
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
+    with open(STRATEGY_JSON, "r", encoding="utf-8") as f:
         tree = json.load(f)
 
-    results = []
-    walk(tree, conditions=[], engine_conds=[], sub_strategy=None, results=results)
+    results = extract_paths(tree)
 
-    # Group output by endpoint (leaf asset)
-    results.sort(key=lambda r: r["endpoint"])
+    # Build output lines
+    lines = []
+    results_sorted = sorted(results, key=lambda r: r["endpoint"])
     current_end = None
-    for path in results:
+    for path in results_sorted:
         if path["endpoint"] != current_end:
             current_end = path["endpoint"]
-            print(f"\n{'='*80}")
-            print(f"  ENDPOINT: {current_end}")
-            print(f"{'='*80}")
-        print(format_path(path))
+            lines.append(f"\n{'='*80}")
+            lines.append(f"  ENDPOINT: {current_end}")
+            lines.append(f"{'='*80}")
+        lines.append(format_path(path))
 
-    print(f"\n{'='*80}")
-    print(f"  TOTAL PATHS: {len(results)}")
-    print(f"{'='*80}\n")
+    lines.append(f"\n{'='*80}")
+    lines.append(f"  TOTAL PATHS: {len(results)}")
+    lines.append(f"{'='*80}\n")
+
+    output = "\n".join(lines)
+
+    # Print to stdout
+    print(output)
+
+    # Write to paths.txt alongside this script
+    with open(PATHS_TXT, "w", encoding="utf-8") as f:
+        f.write(output)
+    print(f"\n[Written to {PATHS_TXT}]", file=sys.stderr)
 
 
 if __name__ == "__main__":
