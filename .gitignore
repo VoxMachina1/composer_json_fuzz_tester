@@ -17,4 +17,4 @@ strategy_engine/results/*.csv
 
 # Ignore pathfinder generated output files
 pathfinder/paths*.txt
-pathfinder/tree.txt
+pathfinder/tree.txt**/.~lock.*
