@@ -167,10 +167,41 @@ def _is_portfolio_filter(node):
     return children and all(c.get("step") == "group" for c in children)
 
 
+def _get_ticker_and_id(child):
+    """
+    Extract (ticker, node_id) from a filter child node.
+    Handles two cases:
+      1. Bare asset node: step == "asset"
+      2. Wrapped asset node: step == "wt-cash-equal" inserted by strategy_inserter.
+         In this case we look inside the else branch of the first if node to find
+         the original asset ticker (the else branch always holds the original endpoint).
+    Returns (ticker, node_id) or (None, None) if not resolvable.
+    """
+    if child.get("step") == "asset":
+        return child.get("ticker", "?"), child.get("id", "UNKNOWN")
+
+    if child.get("step") == "wt-cash-equal":
+        # Walk into children to find the else branch asset
+        for if_node in child.get("children", []):
+            if if_node.get("step") != "if":
+                continue
+            for if_child in if_node.get("children", []):
+                if if_child.get("is-else-condition?"):
+                    for asset in if_child.get("children", []):
+                        if asset.get("step") == "asset":
+                            # Return the wrapper's id as the node_id since
+                            # that's what's actually in the parent's children list
+                            return asset.get("ticker", "?"), child.get("id", "UNKNOWN")
+
+    return None, None
+
+
 def _expand_filter(node, conditions, engine_conds, sub_strategy, results):
     """
     Expand a top-1 asset-selection filter into one branch per child asset.
     Each branch gets a pairwise condition: winner_RSI > loser_RSI.
+    Handles both bare asset children and wt-cash-equal wrapped children
+    (inserted by strategy_inserter in a previous pass).
     Raises NotImplementedError for select-n > 1 or non-2-asset filters.
     """
     select_n = int(node.get("select-n", 1))
@@ -184,17 +215,21 @@ def _expand_filter(node, conditions, engine_conds, sub_strategy, results):
     fn_human  = FN_LABELS.get(fn_raw, fn_raw)
     fn_engine = FN_ENGINE.get(fn_raw, fn_raw)
 
-    asset_children = [c for c in node.get("children", []) if c.get("step") == "asset"]
+    # Collect all resolvable children (bare assets or wrapped assets)
+    resolvable = []
+    for c in node.get("children", []):
+        ticker, nid = _get_ticker_and_id(c)
+        if ticker:
+            resolvable.append((ticker, nid, c))
 
-    if len(asset_children) != 2:
+    if len(resolvable) != 2:
         raise NotImplementedError(
-            f"Top-1 filter with {len(asset_children)} assets is not supported. "
+            f"Top-1 filter with {len(resolvable)} resolvable assets is not supported. "
             f"Only 2-asset top-1 filters are currently handled."
         )
 
-    for i, child in enumerate(asset_children):
-        winner = child.get("ticker", "?")
-        loser  = asset_children[1 - i].get("ticker", "?")
+    for i, (winner, nid, child) in enumerate(resolvable):
+        loser = resolvable[1 - i][0]
 
         if window:
             human_cond  = f"{fn_human}({winner}, {window}) > {fn_human}({loser}, {window})"
@@ -209,7 +244,7 @@ def _expand_filter(node, conditions, engine_conds, sub_strategy, results):
             "engine_conds":        list(engine_conds) + [engine_cond],
             "engine_precondition": " and ".join(list(engine_conds) + [engine_cond]),
             "endpoint":            winner,
-            "node_id":             child.get("id", "UNKNOWN"),
+            "node_id":             nid,
         })
 
 
