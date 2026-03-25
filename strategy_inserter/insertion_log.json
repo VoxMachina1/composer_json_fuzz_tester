@@ -1,0 +1,402 @@
+[
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) <= MA(SPY, 200) AND Price(SPY) <= MA(SPY, 20)",
+    "endpoint": "PSQ",
+    "node_id": "54a00bed-2364-480b-8ba8-5dc127ef04c0",
+    "target_assets": [
+      "SOXL"
+    ],
+    "signal_assets": [
+      "QQQE",
+      "XLY"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 2
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) <= MA(SPY, 200) AND Price(SPY) > MA(SPY, 20) AND RSI(AGG, 20) > RSI(SH, 60)",
+    "endpoint": "TQQQ",
+    "node_id": "fe8b1ba0-9dfd-442d-a456-e3c9e87cc5cb",
+    "target_assets": [
+      "PSQ",
+      "SQQQ"
+    ],
+    "signal_assets": [
+      "QQQE",
+      "TLT"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 2
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) <= MA(SPY, 200) AND Price(SPY) > MA(SPY, 20) AND RSI(FDN, 200) <= RSI(XLU, 200)",
+    "endpoint": "PSQ",
+    "node_id": "c460b478-463c-473c-a17a-ad3d0e305723",
+    "target_assets": [
+      "SOXL",
+      "UPRO"
+    ],
+    "signal_assets": [
+      "CORP"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) <= MA(SPY, 200) AND Price(SPY) > MA(SPY, 20) AND RSI(TLT, 20) > RSI(PSQ, 20)",
+    "endpoint": "TQQQ",
+    "node_id": "169149c2-ea05-4184-be04-94c05f031732",
+    "target_assets": [
+      "PSQ",
+      "SQQQ"
+    ],
+    "signal_assets": [
+      "QQQE"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND CumRet(BND, 60) <= CumRet(BIL, 60)",
+    "endpoint": "PSQ",
+    "node_id": "9539cc2b-72d7-4eff-a4ff-35f4009b5800",
+    "target_assets": [
+      "BIL",
+      "UPRO"
+    ],
+    "signal_assets": [
+      "BIL",
+      "IOO",
+      "XLK"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 3
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND CumRet(BND, 60) > CumRet(BIL, 60)",
+    "endpoint": "TQQQ",
+    "node_id": "0a0f79e5-9f5f-4950-bf8e-b8ac3b5668d0",
+    "target_assets": [
+      "TLT",
+      "UVXY"
+    ],
+    "signal_assets": [
+      "QQQ",
+      "SPY",
+      "XLF"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 3
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(AGG, 20) <= RSI(SH, 60)",
+    "endpoint": "PSQ",
+    "node_id": "6bf21d02-d956-4548-95bc-f32cc30c58e0",
+    "target_assets": [
+      "UPRO"
+    ],
+    "signal_assets": [
+      "XLP"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(AGG, 20) <= RSI(SH, 60) AND RSI(IEF, 10) <= RSI(PSQ, 20)",
+    "endpoint": "PSQ",
+    "node_id": "7e3f75fc-393f-40c7-ac3c-070ab920301a",
+    "target_assets": [
+      "UPRO"
+    ],
+    "signal_assets": [
+      "XLP"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(AGG, 20) > RSI(SH, 60)",
+    "endpoint": "TQQQ",
+    "node_id": "ad014524-2e1a-476d-a322-6d173925d605",
+    "target_assets": [
+      "TLT",
+      "UVXY"
+    ],
+    "signal_assets": [
+      "QQQ",
+      "SH",
+      "SPY",
+      "XLF",
+      "XLY"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 5
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(FDN, 200) <= RSI(XLU, 200)",
+    "endpoint": "PSQ",
+    "node_id": "bf145a0e-8ae4-47ec-9cb7-7a9d829ecfe4",
+    "target_assets": [
+      "TLT"
+    ],
+    "signal_assets": [
+      "FDN"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(FDN, 200) > RSI(XLU, 200)",
+    "endpoint": "TQQQ",
+    "node_id": "64c10474-618a-44c8-928b-2c2e5daf7a7e",
+    "target_assets": [
+      "UVXY"
+    ],
+    "signal_assets": [
+      "QQQ",
+      "SPY",
+      "XLY"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 3
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(TLT, 20) <= RSI(PSQ, 20)",
+    "endpoint": "PSQ",
+    "node_id": "47156bd0-cb95-4616-93a0-7582f9337fad",
+    "target_assets": [
+      "QQQ",
+      "TQQQ",
+      "UPRO"
+    ],
+    "signal_assets": [
+      "IOO",
+      "TLT",
+      "XLK"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 4
+  },
+  {
+    "sub_strategy": "Bond Compares",
+    "conditions": "Price(SPY) > MA(SPY, 200) AND RSI(TLT, 20) > RSI(PSQ, 20)",
+    "endpoint": "TQQQ",
+    "node_id": "a3c0604a-7efd-4de8-973d-bb89b2eed067",
+    "target_assets": [
+      "UVXY"
+    ],
+    "signal_assets": [
+      "PSQ",
+      "QQQ",
+      "SPY",
+      "XLY"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 4
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "Price(KMLM) >= MA(KMLM, 20) AND Price(SPY) < MA(SPY, 200)",
+    "endpoint": "SQQQ",
+    "node_id": "8f78c3ec-e8b3-4e24-b669-9ffa790c8662",
+    "target_assets": [
+      "SOXL"
+    ],
+    "signal_assets": [
+      "XLF"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "Price(KMLM) >= MA(KMLM, 20) AND Price(SPY) >= MA(SPY, 200)",
+    "endpoint": "PSQ",
+    "node_id": "d7fdb9fb-3228-4f2e-b01a-0821da1f4708",
+    "target_assets": [
+      "BIL",
+      "SOXL",
+      "TQQQ"
+    ],
+    "signal_assets": [
+      "CORP",
+      "IOO",
+      "SPYV",
+      "VTV",
+      "XLK",
+      "XLP"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 7
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "RSI(SPY, 10) <= RSI(KMLM, 10) AND Price(SPY) < MA(SPY, 200)",
+    "endpoint": "SQQQ",
+    "node_id": "d7c1494c-ae5c-4c61-b612-86fb03875cb0",
+    "target_assets": [
+      "QQQ",
+      "TQQQ"
+    ],
+    "signal_assets": [
+      "VTV",
+      "XLF"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 2
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "RSI(SPY, 10) <= RSI(KMLM, 10) AND Price(SPY) >= MA(SPY, 200)",
+    "endpoint": "PSQ",
+    "node_id": "360a049f-1a9b-466f-b475-d40b5176f84c",
+    "target_assets": [
+      "BIL",
+      "SOXL",
+      "TQQQ"
+    ],
+    "signal_assets": [
+      "CORP",
+      "IOO",
+      "SPY",
+      "SPYV",
+      "TLT",
+      "VTV",
+      "XLF",
+      "XLK",
+      "XLP"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 10
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "RSI(SPY, 10) > RSI(KMLM, 10)",
+    "endpoint": "TQQQ",
+    "node_id": "60a239ff-672d-4a69-b0b5-dc27ae18f7e8",
+    "target_assets": [
+      "PSQ",
+      "SQQQ"
+    ],
+    "signal_assets": [
+      "XLP"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "RSI(XLK, 10) <= RSI(KMLM, 10) AND Price(SPY) < MA(SPY, 200)",
+    "endpoint": "SQQQ",
+    "node_id": "9c05a98a-64f4-4d24-b182-f6386b893ee0",
+    "target_assets": [
+      "QQQ",
+      "TQQQ"
+    ],
+    "signal_assets": [
+      "XLF"
+    ],
+    "operators": [
+      "<"
+    ],
+    "if_node_count": 1
+  },
+  {
+    "sub_strategy": "KMLM",
+    "conditions": "RSI(XLK, 10) <= RSI(KMLM, 10) AND Price(SPY) >= MA(SPY, 200)",
+    "endpoint": "PSQ",
+    "node_id": "15862cd0-a925-4907-bab2-47c43644021f",
+    "target_assets": [
+      "BIL",
+      "SOXL",
+      "TQQQ"
+    ],
+    "signal_assets": [
+      "CORP",
+      "GLD",
+      "IOO",
+      "SPY",
+      "SPYV",
+      "TLT",
+      "VTV",
+      "XLF",
+      "XLK",
+      "XLP"
+    ],
+    "operators": [
+      "<",
+      ">"
+    ],
+    "if_node_count": 11
+  },
+  {
+    "sub_strategy": "The Holy Grail V1 (original OOS 7/20/2022)",
+    "conditions": "Price(TQQQ, 10) <= MA(TQQQ, 200) AND RSI(TQQQ, 10) >= 31 AND RSI(SOXL, 10) >= 30 AND Price(TQQQ) < MA(TQQQ, 20) AND RSI(SQQQ, 10) > RSI(BSV, 10)",
+    "endpoint": "SQQQ",
+    "node_id": "edb4cdb1-1f5b-46b5-8112-b21dec9a085b",
+    "target_assets": [
+      "SOXL"
+    ],
+    "signal_assets": [
+      "TLT"
+    ],
+    "operators": [
+      ">"
+    ],
+    "if_node_count": 1
+  }
+]

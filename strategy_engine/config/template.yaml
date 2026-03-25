@@ -8,9 +8,9 @@ filter_assets: ["SPY", "QQQ"]
 indicator: "RSI"
 indicator_period: 10
 
-signal_operator: ">"
-threshold_start: 50.0
-threshold_end: 100.0
+signal_operator: "<"
+threshold_start: 1.0
+threshold_end: 50.0
 threshold_step: 0.5
 
 slippage_bps: 1.0

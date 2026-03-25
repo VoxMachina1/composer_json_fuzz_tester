@@ -1,38 +1,39 @@
 """
 strategy_inserter.py
 ====================
-Takes a Composer strategy JSON and a filtered backtest results CSV,
-and inserts frontrunner logic at the correct leaf nodes in the tree.
+Takes a Composer strategy JSON and a filtered results CSV (containing both
+overbought '>' and oversold '<' rows), and inserts frontrunner logic at the
+correct leaf nodes in the tree in a single pass.
 
-For each unique (sub_strategy, conditions, endpoint) group in the CSV,
-the matching leaf asset node is replaced with a wt-cash-equal block
-containing one if node per unique (signal_asset, most_inclusive_threshold) pair:
+For each unique (sub_strategy, conditions, endpoint) group, the matching
+leaf asset node is replaced with a wt-cash-equal block. Each unique
+(signal_asset, operator, most_inclusive_threshold) triple becomes one if node:
 
   wt-cash-equal
-    IF signal_A_RSI > threshold_1  ->  [target_1, target_2]  (same threshold)
+    IF signal_A_RSI > threshold_1  ->  [target_1, target_2]
       ELSE -> original_endpoint
-    IF signal_A_RSI > threshold_2  ->  [target_3]            (different threshold)
+    IF signal_A_RSI < threshold_2  ->  [target_3]
       ELSE -> original_endpoint
-    IF signal_B_RSI > threshold_3  ->  [target_1, target_3]  (different signal)
+    IF signal_B_RSI > threshold_3  ->  [target_1]
       ELSE -> original_endpoint
 
-Threshold deduplication (most inclusive per signal_asset per target):
-  - '>' operator: keep minimum threshold (fires most often)
-  - '<' operator: keep maximum threshold (fires most often)
+Threshold deduplication (most inclusive per signal_asset+operator+target):
+  '>' or '>=' : keep minimum threshold (fires most often)
+  '<' or '<=' : keep maximum threshold (fires most often)
 
-Targets sharing the exact same (signal_asset, most_inclusive_threshold)
-are grouped as equal-weight siblings in one if node's true branch.
-Targets with different thresholds get separate if nodes.
+Tautology detection: if the same signal_asset appears with both '>' and '<'
+at thresholds that together always evaluate true (thresh_gt < thresh_lt),
+that signal_asset is skipped with a warning.
 
 Canonical input (strategy):  pathfinder/strategy.json
+Canonical input (CSV):        strategy_filter/filtered.csv (default)
 Canonical output:             strategy_inserter/strategy_modified.json
                               strategy_inserter/insertion_log.json
 
 Usage:
+    python strategy_inserter/strategy_inserter.py
+    python strategy_inserter/strategy_inserter.py path/to/custom_filtered.csv
     python strategy_inserter/strategy_inserter.py --dry-run
-    python strategy_inserter/strategy_inserter.py strategy_engine/results/filtered_overbought.csv
-    python strategy_inserter/strategy_inserter.py strategy_engine/results/filtered_oversold.csv
-    python strategy_inserter/strategy_inserter.py path/to/any_filtered.csv
 """
 
 import json
@@ -52,6 +53,7 @@ import pandas as pd
 _HERE          = Path(__file__).resolve().parent         # strategy_inserter/
 _ROOT          = _HERE.parent                            # project root
 STRATEGY_JSON  = _ROOT / "pathfinder" / "strategy.json"
+DEFAULT_CSV    = _ROOT / "strategy_filter" / "filtered.csv"
 OUTPUT_JSON    = _HERE / "strategy_modified.json"
 OUTPUT_LOG     = _HERE / "insertion_log.json"
 PATHFINDER_DIR = _ROOT / "pathfinder"
@@ -106,7 +108,7 @@ COMPARATOR_MAP = {
 
 def most_inclusive_threshold(thresholds, operator):
     """
-    Return the single most inclusive threshold for a given operator.
+    Return the most inclusive threshold for a given operator.
       '>' or '>=' : minimum threshold (fires most often)
       '<' or '<=' : maximum threshold (fires most often)
     """
@@ -115,8 +117,23 @@ def most_inclusive_threshold(thresholds, operator):
     elif operator in ("<", "<="):
         return max(thresholds)
     else:
-        # For == or != just take the first
         return thresholds[0]
+
+
+# ---------------------------------------------------------------------------
+# Tautology detection
+# ---------------------------------------------------------------------------
+
+def is_tautology(thresh_gt, thresh_lt):
+    """
+    Returns True if RSI > thresh_gt OR RSI < thresh_lt is always true.
+    This happens when thresh_gt < thresh_lt — the two conditions overlap
+    and together cover all possible RSI values.
+
+    Example: RSI > 16 OR RSI < 18.5 is always true since 16 < 18.5.
+    Example: RSI > 80 OR RSI < 20 is NOT always true since 80 > 20.
+    """
+    return thresh_gt < thresh_lt
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +141,6 @@ def most_inclusive_threshold(thresholds, operator):
 # ---------------------------------------------------------------------------
 
 def build_asset_node(ticker):
-    """Build a minimal Composer asset node."""
     return {
         "id":                           new_id(),
         "step":                         "asset",
@@ -134,22 +150,22 @@ def build_asset_node(ticker):
     }
 
 
+def _fmt_threshold(value):
+    return str(int(value)) if value == int(value) else str(value)
+
+
 def build_if_node(signal_asset, operator, threshold, ind_period,
                   target_tickers, original_asset_node):
     """
-    Build a single flat-style if/else node:
+    Build a single flat-style if/else node for one
+    (signal_asset, operator, threshold) combination.
 
       IF signal_asset_RSI_period OP threshold -> [target_1, target_2, ...]
       ELSE -> original_asset_node
-
-    Uses flat lhs-fn / rhs-fn style (no compound block) since it's
-    always a single condition.
     """
     lhs_fn_raw = FN_MAP.get("RSI", "relative-strength-index")
     comp       = COMPARATOR_MAP.get(operator, "gt")
-
-    # Format threshold: int if whole number, float otherwise
-    thresh_str = str(int(threshold)) if threshold == int(threshold) else str(threshold)
+    thresh_str = _fmt_threshold(threshold)
 
     target_nodes = [build_asset_node(t) for t in target_tickers]
 
@@ -187,9 +203,6 @@ def build_if_node(signal_asset, operator, threshold, ind_period,
 
 
 def build_wt_cash_equal_wrapper(if_nodes):
-    """
-    Wrap a list of if nodes in a wt-cash-equal node.
-    """
     return {
         "id":                           new_id(),
         "step":                         "wt-cash-equal",
@@ -203,34 +216,67 @@ def build_wt_cash_equal_wrapper(if_nodes):
 # Core grouping logic
 # ---------------------------------------------------------------------------
 
-def build_if_nodes_for_group(group_df, original_asset_node, operator, ind_period):
+def build_if_nodes_for_group(group_df, original_asset_node, ind_period):
     """
     For one (sub_strategy, conditions, endpoint) group, build the list of
-    if nodes to populate the wt-cash-equal wrapper.
+    if nodes for the wt-cash-equal wrapper.
 
     Algorithm:
-    1. For each (signal_asset, target_asset) pair, find the most inclusive threshold
-    2. Group targets by (signal_asset, most_inclusive_threshold)
-    3. Each unique (signal_asset, threshold) pair becomes one if node
-    4. Targets sharing the same (signal_asset, threshold) are siblings in that node
-    5. Sort if nodes: most targets first, then by threshold (most inclusive first)
+    1. For each (signal_asset, operator, target_asset) triple, find the most
+       inclusive threshold
+    2. Tautology check: if the same signal_asset has both '>' and '<' conditions
+       whose thresholds overlap, skip that signal_asset entirely with a warning
+    3. Group targets by (signal_asset, operator, most_inclusive_threshold)
+    4. Each unique (signal_asset, operator, threshold) becomes one if node
+    5. Sort: most targets first, then by most inclusive threshold
     """
-    # Step 1: find most inclusive threshold per (signal_asset, target_asset)
-    pair_threshold = {}
-    for (sig, tgt), pair_df in group_df.groupby(["signal_asset", "target_asset"]):
-        thresholds = pair_df["threshold"].tolist()
-        pair_threshold[(sig, tgt)] = most_inclusive_threshold(thresholds, operator)
+    # Step 1: find most inclusive threshold per (signal_asset, operator, target)
+    trio_threshold = {}
+    for (sig, op, tgt), trio_df in group_df.groupby(
+            ["signal_asset", "signal_operator", "target_asset"]):
+        thresholds = trio_df["threshold"].tolist()
+        trio_threshold[(sig, op, tgt)] = most_inclusive_threshold(thresholds, op)
 
-    # Step 2: group targets by (signal_asset, threshold)
-    # key: (signal_asset, threshold) -> set of target_tickers
-    sig_thresh_targets = defaultdict(set)
-    for (sig, tgt), thresh in pair_threshold.items():
-        sig_thresh_targets[(sig, thresh)].add(tgt)
+    # Step 2: tautology check per signal_asset
+    # Collect best (most inclusive) threshold per (signal_asset, operator)
+    sig_op_best = defaultdict(list)
+    for (sig, op, tgt), thresh in trio_threshold.items():
+        sig_op_best[(sig, op)].append(thresh)
 
-    # Step 3: build one if node per (signal_asset, threshold) pair
+    # Find most inclusive per (sig, op) across all targets
+    sig_op_inclusive = {}
+    for (sig, op), thresholds in sig_op_best.items():
+        sig_op_inclusive[(sig, op)] = most_inclusive_threshold(thresholds, op)
+
+    # Check for tautologies
+    tautology_signals = set()
+    signals_with_gt = {sig for (sig, op) in sig_op_inclusive if op == ">"}
+    signals_with_lt = {sig for (sig, op) in sig_op_inclusive if op == "<"}
+    shared_signals  = signals_with_gt & signals_with_lt
+
+    for sig in shared_signals:
+        thresh_gt = sig_op_inclusive.get((sig, ">"))
+        thresh_lt = sig_op_inclusive.get((sig, "<"))
+        if thresh_gt is not None and thresh_lt is not None:
+            if is_tautology(thresh_gt, thresh_lt):
+                print(f"  [TAUTOLOGY] Skipping signal_asset '{sig}': "
+                      f"RSI > {thresh_gt} OR RSI < {thresh_lt} is always true")
+                tautology_signals.add(sig)
+
+    # Step 3: group targets by (signal_asset, operator, threshold)
+    # key: (signal_asset, operator, threshold) -> set of target_tickers
+    key_targets = defaultdict(set)
+    for (sig, op, tgt), thresh in trio_threshold.items():
+        if sig in tautology_signals:
+            continue
+        key_targets[(sig, op, thresh)].add(tgt)
+
+    if not key_targets:
+        return []
+
+    # Step 4: build one if node per (signal_asset, operator, threshold)
     if_nodes = []
-    for (sig, thresh), targets in sig_thresh_targets.items():
-        # Sort targets by best Median_Return descending for consistent ordering
+    for (sig, op, thresh), targets in key_targets.items():
         target_list = sorted(
             targets,
             key=lambda t: group_df[group_df["target_asset"] == t]["Median_Return"].max(),
@@ -238,21 +284,24 @@ def build_if_nodes_for_group(group_df, original_asset_node, operator, ind_period
         )
         if_node = build_if_node(
             signal_asset=sig,
-            operator=operator,
+            operator=op,
             threshold=thresh,
             ind_period=ind_period,
             target_tickers=target_list,
             original_asset_node=original_asset_node,
         )
-        if_nodes.append((sig, thresh, len(targets), if_node))
+        if_nodes.append((sig, op, thresh, len(targets), if_node))
 
-    # Step 4: sort if nodes — most targets first, then by most inclusive threshold
-    if operator in (">", ">="):
-        if_nodes.sort(key=lambda x: (-x[2], x[1]))   # most targets, then lowest thresh
-    else:
-        if_nodes.sort(key=lambda x: (-x[2], -x[1]))  # most targets, then highest thresh
+    # Step 5: sort — most targets first, then most inclusive threshold
+    def sort_key(item):
+        sig, op, thresh, n_targets, _ = item
+        # More targets = higher priority
+        # Within same target count, most inclusive threshold first
+        inclusive_score = -thresh if op in (">", ">=") else thresh
+        return (-n_targets, inclusive_score)
 
-    return [n for _, _, _, n in if_nodes]
+    if_nodes.sort(key=sort_key)
+    return [n for _, _, _, _, n in if_nodes]
 
 
 # ---------------------------------------------------------------------------
@@ -260,31 +309,25 @@ def build_if_nodes_for_group(group_df, original_asset_node, operator, ind_period
 # ---------------------------------------------------------------------------
 
 def build_node_index(tree):
-    """Flat dict: {node_id: node_dict} — live references into tree."""
     index = {}
-
     def _walk(node):
         nid = node.get("id")
         if nid:
             index[nid] = node
         for child in node.get("children", []):
             _walk(child)
-
     _walk(tree)
     return index
 
 
 def build_parent_index(tree):
-    """Flat dict: {child_node_id: (parent_node, child_index)}"""
     parent_index = {}
-
     def _walk(node):
         for i, child in enumerate(node.get("children", [])):
             cid = child.get("id")
             if cid:
                 parent_index[cid] = (node, i)
             _walk(child)
-
     _walk(tree)
     return parent_index
 
@@ -323,21 +366,33 @@ def build_path_to_nodeid_map(strategy_tree):
 
 def load_and_group_candidates(csv_path):
     """
-    Load filtered CSV and group by (sub_strategy, conditions, endpoint).
+    Load filtered CSV (must have signal_operator column) and group by
+    (sub_strategy, conditions, endpoint).
 
-    Returns list of specs:
-    {
-        "sub_strategy": str,
-        "conditions":   str,
-        "endpoint":     str,
-        "group_df":     DataFrame,   # all rows for this group
-    }
+    Validates that signal_operator column exists and contains only
+    recognised operators.
     """
     df = pd.read_csv(csv_path)
 
-    df["endpoint"]     = df["endpoint"].str.upper()
-    df["target_asset"] = df["target_asset"].str.upper()
-    df["signal_asset"] = df["signal_asset"].str.upper()
+    if "signal_operator" not in df.columns:
+        print(
+            f"ERROR: CSV has no signal_operator column: {csv_path}\n"
+            f"  Re-run run_analysis.py and filter_results.py to generate "
+            f"a CSV with this column.",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    df["endpoint"]        = df["endpoint"].str.upper()
+    df["target_asset"]    = df["target_asset"].str.upper()
+    df["signal_asset"]    = df["signal_asset"].str.upper()
+    df["signal_operator"] = df["signal_operator"].str.strip()
+
+    valid_ops = {">", "<", ">=", "<="}
+    bad_ops = set(df["signal_operator"].unique()) - valid_ops
+    if bad_ops:
+        print(f"ERROR: Unknown signal_operator values: {bad_ops}", file=sys.stderr)
+        sys.exit(1)
 
     specs = []
     for keys, group_df in df.groupby(["sub_strategy", "conditions", "endpoint"]):
@@ -355,40 +410,42 @@ def load_and_group_candidates(csv_path):
 # Main insertion logic
 # ---------------------------------------------------------------------------
 
-def insert_frontrunners(strategy_tree, csv_path, operator=">",
-                        ind_period=10, dry_run=False, index_tree=None):
+def insert_frontrunners(strategy_tree, csv_path, ind_period=10, dry_run=False):
     """
     Main pipeline. Deep-copies the tree, applies all insertions.
     Returns (modified_tree, log_list).
-
-    index_tree: optional separate tree to build the path->node_id map from.
-                Use this when strategy_tree is a modified version (pass 2+)
-                so the path map is built from the original stable node IDs.
-                If None, uses strategy_tree for both indexing and insertion.
     """
     tree    = copy.deepcopy(strategy_tree)
     log     = []
     skipped = []
 
-    # Build path map from original tree if provided, otherwise from working tree
-    map_tree     = index_tree if index_tree is not None else tree
-    path_map     = build_path_to_nodeid_map(map_tree)
+    # Always build path map from original canonical JSON for stable node IDs
+    with open(STRATEGY_JSON, "r", encoding="utf-8") as f:
+        original_tree = json.load(f)
+
+    path_map     = build_path_to_nodeid_map(original_tree)
     parent_index = build_parent_index(tree)
     node_index   = build_node_index(tree)
 
     specs = load_and_group_candidates(csv_path)
 
+    # Count operator breakdown for info
+    all_df = pd.concat([s["group_df"] for s in specs], ignore_index=True)
+    n_gt   = (all_df["signal_operator"] == ">").sum()
+    n_lt   = (all_df["signal_operator"] == "<").sum()
+
     print(f"\n{'='*70}")
-    print(f"  FRONTRUNNER INSERTION PIPELINE")
-    print(f"  {len(specs)} unique insertion point(s) found in CSV")
-    print(f"  Operator: {operator} | RSI period: {ind_period}")
+    print(f"  FRONTRUNNER INSERTION PIPELINE  (single pass)")
+    print(f"  {len(specs)} unique insertion point(s)")
+    print(f"  Signal rows: {n_gt} overbought ('>'),  {n_lt} oversold ('<')")
+    print(f"  RSI period:  {ind_period}")
     print(f"{'='*70}\n")
 
     for spec in specs:
-        sub     = spec["sub_strategy"]
-        conds   = spec["conditions"]
-        endpt   = spec["endpoint"]
-        gdf     = spec["group_df"]
+        sub   = spec["sub_strategy"]
+        conds = spec["conditions"]
+        endpt = spec["endpoint"]
+        gdf   = spec["group_df"]
 
         lookup_key = (sub.strip(), normalise_conditions(conds), endpt.upper())
         node_id    = path_map.get(lookup_key)
@@ -408,25 +465,30 @@ def insert_frontrunners(strategy_tree, csv_path, operator=">",
         original_node          = node_index[node_id]
         parent_node, child_idx = parent_index[node_id]
 
-        # Build the if nodes for this group
         if_nodes = build_if_nodes_for_group(
-            gdf, copy.deepcopy(original_node), operator, ind_period
+            gdf, copy.deepcopy(original_node), ind_period
         )
 
-        # Wrap in wt-cash-equal
+        if not if_nodes:
+            msg = (f"[SKIP] All signal assets were tautologies for "
+                   f"({sub} | {endpt})")
+            print(msg)
+            skipped.append(msg)
+            continue
+
         wrapper = build_wt_cash_equal_wrapper(if_nodes)
 
-        # Summarise for logging
         unique_signals  = sorted(gdf["signal_asset"].unique().tolist())
         unique_targets  = sorted(gdf["target_asset"].unique().tolist())
-        total_if_nodes  = len(if_nodes)
+        ops_present     = sorted(gdf["signal_operator"].unique().tolist())
 
         print(f"[INSERT] {sub} | {endpt}")
         print(f"         Conditions: {conds}")
         print(f"         Node ID:    {node_id}")
         print(f"         Targets:    {', '.join(unique_targets)}")
         print(f"         Signals:    {', '.join(unique_signals)}")
-        print(f"         If nodes:   {total_if_nodes}")
+        print(f"         Operators:  {', '.join(ops_present)}")
+        print(f"         If nodes:   {len(if_nodes)}")
 
         if not dry_run:
             parent_node["children"][child_idx] = wrapper
@@ -438,7 +500,8 @@ def insert_frontrunners(strategy_tree, csv_path, operator=">",
             "node_id":       node_id,
             "target_assets": unique_targets,
             "signal_assets": unique_signals,
-            "if_node_count": total_if_nodes,
+            "operators":     ops_present,
+            "if_node_count": len(if_nodes),
         })
 
     print(f"\n{'='*70}")
@@ -464,30 +527,16 @@ def main():
         "filtered_csv",
         nargs="?",
         default=None,
-        help="Path to filtered results CSV. "
-             "Defaults to strategy_engine/results/filtered_overbought.csv"
+        help=f"Path to filtered results CSV with signal_operator column. "
+             f"Defaults to {DEFAULT_CSV}"
     )
     parser.add_argument(
         "--input", "-i", default=None,
-        help="Path to input strategy JSON. "
-             "Defaults to pathfinder/strategy.json. "
-             "Use strategy_inserter/strategy_modified.json to chain passes."
+        help="Input strategy JSON. Defaults to pathfinder/strategy.json."
     )
     parser.add_argument(
         "--output", "-o", default=None,
-        help="Path to output strategy JSON. "
-             "Defaults to strategy_inserter/strategy_modified.json."
-    )
-    parser.add_argument(
-        "--log", "-l", default=None,
-        help="Path to output insertion log JSON. "
-             "Defaults to strategy_inserter/insertion_log.json."
-    )
-    parser.add_argument(
-        "--operator", "-op", default=">",
-        choices=[">", "<", ">=", "<="],
-        help="RSI signal operator. Use '>' for overbought CSV, '<' for oversold CSV. "
-             "Default: '>'"
+        help="Output strategy JSON. Defaults to strategy_inserter/strategy_modified.json."
     )
     parser.add_argument(
         "--period", "-p", type=int, default=10,
@@ -499,14 +548,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # Resolve paths
-    csv_path    = Path(args.filtered_csv) if args.filtered_csv \
-                  else _ROOT / "strategy_engine" / "results" / "filtered_overbought.csv"
+    csv_path    = Path(args.filtered_csv) if args.filtered_csv else DEFAULT_CSV
     input_json  = Path(args.input)  if args.input  else STRATEGY_JSON
     output_json = Path(args.output) if args.output else OUTPUT_JSON
-    log_path    = Path(args.log)    if args.log    else OUTPUT_LOG
 
-    # Validate inputs
     if not input_json.exists():
         print(f"ERROR: Input JSON not found at {input_json}", file=sys.stderr)
         sys.exit(1)
@@ -521,34 +566,24 @@ def main():
     with open(input_json, "r", encoding="utf-8") as f:
         strategy_tree = json.load(f)
 
-    # Always build the path->node_id index from the canonical original JSON
-    # so node IDs are stable across chained passes (pass 1 and pass 2+)
-    if not STRATEGY_JSON.exists():
-        print(f"ERROR: Canonical strategy JSON not found at {STRATEGY_JSON}", file=sys.stderr)
-        sys.exit(1)
-    with open(STRATEGY_JSON, "r", encoding="utf-8") as f:
-        original_tree = json.load(f)
-
     modified_tree, log = insert_frontrunners(
         strategy_tree,
         csv_path,
-        operator=args.operator,
         ind_period=args.period,
         dry_run=args.dry_run,
-        index_tree=original_tree,
     )
 
     if args.dry_run:
         print("[DRY RUN] No output files written.")
         return
 
-    # Write modified JSON
+    output_json.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(modified_tree, f, indent=4)
     print(f"Modified strategy written to: {output_json}")
 
-    # Write insertion log
     if log:
+        log_path = output_json.parent / "insertion_log.json"
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(log, f, indent=2)
         print(f"Insertion log written to:     {log_path}")

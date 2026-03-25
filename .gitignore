@@ -18,3 +18,7 @@ strategy_engine/results/*.csv
 # Ignore pathfinder generated output files
 pathfinder/paths*.txt
 pathfinder/tree.txt**/.~lock.*
+
+# Misc paste ins
+strategy_filter/filtered.csv
+strategy_filter/filter_summary.txt

@@ -14,6 +14,11 @@ Canonical input:  pathfinder/strategy.json
 Canonical config: strategy_engine/config/template.yaml
 Canonical output: strategy_engine/results/STRATEGY_NAME_YYYYMMDD_HHMMSS.csv
 
+Run this script twice — once with signal_operator: ">" in template.yaml
+(overbought), once with signal_operator: "<" (oversold). Each run produces
+a timestamped CSV with a signal_operator column recording which operator
+was used. Then run strategy_filter/filter_results.py to combine and filter.
+
 Usage:
     python run_analysis.py
 """
@@ -27,19 +32,19 @@ from pathlib import Path
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
-# Canonical paths — all resolved relative to this script's location (root)
+# Canonical paths
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR    = Path(__file__).resolve().parent
-STRATEGY_JSON = SCRIPT_DIR / "pathfinder" / "strategy.json"
-ENGINE_SRC    = SCRIPT_DIR / "strategy_engine" / "src"
-DATA_DIR      = SCRIPT_DIR / "strategy_engine" / "data"
-TEMPLATE_PATH = SCRIPT_DIR / "strategy_engine" / "config" / "template.yaml"
-RESULTS_DIR   = SCRIPT_DIR / "strategy_engine" / "results"
+SCRIPT_DIR     = Path(__file__).resolve().parent
+STRATEGY_JSON  = SCRIPT_DIR / "pathfinder" / "strategy.json"
+ENGINE_SRC     = SCRIPT_DIR / "strategy_engine" / "src"
+DATA_DIR       = SCRIPT_DIR / "strategy_engine" / "data"
+TEMPLATE_PATH  = SCRIPT_DIR / "strategy_engine" / "config" / "template.yaml"
+RESULTS_DIR    = SCRIPT_DIR / "strategy_engine" / "results"
 PATHFINDER_DIR = SCRIPT_DIR / "pathfinder"
 
 # ---------------------------------------------------------------------------
-# Hardcoded constants — edit these as needed
+# Hardcoded constants
 # ---------------------------------------------------------------------------
 
 EXTRA_SIGNAL_ASSETS = [
@@ -86,7 +91,7 @@ DATE_START        = _tmpl.get("date_range", {}).get("start", "2015-01-01")
 DATE_END          = _tmpl.get("date_range", {}).get("end", "2026-03-15")
 
 # ---------------------------------------------------------------------------
-# Imports — engine modules and path extractor
+# Imports
 # ---------------------------------------------------------------------------
 
 from config_loader   import load_config
@@ -103,20 +108,12 @@ from strategy_paths  import extract_paths
 
 
 # ---------------------------------------------------------------------------
-# Helper: extract tickers mentioned in an engine_precondition string
-# e.g. "SPY_close > SPY_SMA_200 and TLT_RSI_20 > PSQ_RSI_20"
-#   -> {"SPY", "TLT", "PSQ"}
+# Helper: extract tickers from engine_precondition string
 # ---------------------------------------------------------------------------
 
 def extract_tickers_from_precondition(engine_precondition):
-    """
-    Pull every ticker referenced in an engine precondition string.
-    Tickers are the prefix before the first underscore in each column name.
-    Skips fixed numeric values.
-    """
     if not engine_precondition:
         return set()
-
     tickers = set()
     tokens = re.findall(r'\b([A-Z][A-Z0-9]*)_[A-Za-z_0-9]+', engine_precondition)
     for t in tokens:
@@ -125,7 +122,7 @@ def extract_tickers_from_precondition(engine_precondition):
 
 
 # ---------------------------------------------------------------------------
-# Helper: build a config dict for one path + one signal asset
+# Helper: build config dict for one path + one signal asset
 # ---------------------------------------------------------------------------
 
 def build_config(path, signal_asset, target_asset, filter_assets, benchmark_asset):
@@ -151,15 +148,10 @@ def build_config(path, signal_asset, target_asset, filter_assets, benchmark_asse
 
 
 # ---------------------------------------------------------------------------
-# Helper: run the engine pipeline for one config, return list of result dicts
+# Helper: run engine pipeline for one config
 # ---------------------------------------------------------------------------
 
 def run_pipeline(config, api_keys, path_meta):
-    """
-    Runs the full engine pipeline for a single config dict.
-    Returns a list of result rows (one per threshold).
-    path_meta: dict with sub_strategy, conditions, engine_precondition, endpoint
-    """
     signal_asset    = config["signal_assets"][0]
     target_asset    = config["target_assets"][0]
     benchmark_asset = config["benchmark_asset"]
@@ -178,14 +170,12 @@ def run_pipeline(config, api_keys, path_meta):
         config["threshold_step"]
     )
 
-    # Build master dataframe once for this signal/target/filter combination
     df = build_master_dataframe(
         signal_asset, target_asset, benchmark_asset,
         DATA_DIR, filter_assets=filter_assets
     )
     df = add_indicator(df, "signal", ind_name, ind_period)
 
-    # Add indicators for any filter assets referenced in preconditions
     if preconds:
         col_patterns = re.findall(
             r'\b([A-Z][A-Z0-9]+)_(RSI|SMA|EMA|CumRet)_(\d+)\b',
@@ -215,6 +205,7 @@ def run_pipeline(config, api_keys, path_meta):
             "benchmark_asset":     benchmark_asset,
             "target_asset":        target_asset,
             "signal_asset":        signal_asset,
+            "signal_operator":     sig_op,          # <-- new: record operator per row
             "threshold":           thresh,
             "risk_free_rate":      config["risk_free_rate"],
             "slippage_bps":        config["slippage_bps"],
@@ -231,18 +222,18 @@ def run_pipeline(config, api_keys, path_meta):
 # ---------------------------------------------------------------------------
 
 def main():
-    # --- Step 1: Extract all paths from the canonical strategy JSON ---
     print(f"\nParsing strategy: {STRATEGY_JSON}")
+    print(f"Signal operator:  {SIGNAL_OPERATOR}  "
+          f"({'overbought' if SIGNAL_OPERATOR == '>' else 'oversold'} run)")
+
     with open(STRATEGY_JSON, "r", encoding="utf-8") as f:
         tree = json.load(f)
 
     path_results = extract_paths(tree)
     print(f"  Found {len(path_results)} paths across all sub-strategies")
 
-    # --- Step 2: Load API keys ---
     _, api_keys = load_config(config_dict={"_dummy": True})
 
-    # --- Step 3: Ensure all required data is fresh ---
     all_tickers = set()
     all_tickers.add("SPY")
     for path in path_results:
@@ -253,7 +244,6 @@ def main():
     print(f"\nChecking data freshness for {len(all_tickers)} tickers...")
     check_freshness_and_update(list(all_tickers), api_keys, DATA_DIR)
 
-    # --- Step 4: Run engine for each path x signal combination ---
     strategy_endpoints = {p["endpoint"].upper() for p in path_results}
     all_target_assets  = sorted(strategy_endpoints | set(TEMPLATE_TARGETS))
 
@@ -269,7 +259,6 @@ def main():
             (precond_tickers | {t.upper() for t in EXTRA_SIGNAL_ASSETS})
             - {endpoint.upper()}
         )
-
         filter_assets = list(precond_tickers | {endpoint.upper()})
 
         print(f"\n[{path_idx + 1}/{len(path_results)}] "
@@ -293,7 +282,6 @@ def main():
                     failed_runs += 1
                     print(f"  {target} | {signal} -> FAILED: {e}", file=sys.stderr)
 
-    # --- Step 5: Write combined CSV ---
     if not all_rows:
         print("\nNo results to write.", file=sys.stderr)
         sys.exit(1)
@@ -305,8 +293,9 @@ def main():
 
     meta_cols = [
         "sub_strategy", "conditions", "engine_precondition",
-        "endpoint", "benchmark_asset", "target_asset", "signal_asset", "threshold",
-        "slippage_bps", "risk_free_rate"
+        "endpoint", "benchmark_asset", "target_asset", "signal_asset",
+        "signal_operator",                               # <-- new column
+        "threshold", "slippage_bps", "risk_free_rate",
     ]
     metric_cols = [
         "Total_Trades", "Win_Rate", "Avg_Return", "Median_Return",
@@ -324,10 +313,11 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"  Complete.")
-    print(f"  Total runs:   {total_runs}")
-    print(f"  Failed runs:  {failed_runs}")
-    print(f"  Result rows:  {len(all_rows)}")
-    print(f"  Output:       {output_path}")
+    print(f"  Signal operator: {SIGNAL_OPERATOR}")
+    print(f"  Total runs:      {total_runs}")
+    print(f"  Failed runs:     {failed_runs}")
+    print(f"  Result rows:     {len(all_rows)}")
+    print(f"  Output:          {output_path}")
     print(f"{'='*60}\n")
 
 

@@ -1,0 +1,247 @@
+{
+    "id": "CJCWGVFRzr3j0t1BdHjN",
+    "step": "root",
+    "name": "Any/All example",
+    "children": [
+        {
+            "id": "4b4fd94b-8ec1-4791-bcc2-e9b3f4ad27af",
+            "step": "wt-cash-equal",
+            "name": "Weight",
+            "suppress_incomplete_warnings": true,
+            "children": [
+                {
+                    "id": "1d7bc5ef-380a-4a9b-8ac3-19904e255caa",
+                    "step": "if",
+                    "name": "Condition",
+                    "suppress_incomplete_warnings": false,
+                    "weight": {
+                        "num": 100,
+                        "den": 100
+                    },
+                    "children": [
+                        {
+                            "id": "63fc9d7e-0672-4ffb-8882-1268a9de8cfb",
+                            "step": "if-child",
+                            "name": "If",
+                            "collapsed?": false,
+                            "suppress_incomplete_warnings": false,
+                            "children": [
+                                {
+                                    "id": "ae9779ae-86a6-4ffa-8291-222fdf56f8ae",
+                                    "step": "asset",
+                                    "name": "ProShares Trust - ProShares Ultra VIX Short-Term Futures ETF 1.5x Shares",
+                                    "suppress_incomplete_warnings": false,
+                                    "ticker": "UVXY",
+                                    "exchange": "BATS"
+                                }
+                            ],
+                            "is-else-condition?": false,
+                            "condition": {
+                                "condition-type": "compound",
+                                "operator": "any",
+                                "conditions": [
+                                    {
+                                        "condition-type": "binary-compound",
+                                        "operator": "any",
+                                        "tickers": [
+                                            "SPY"
+                                        ],
+                                        "lhs": {
+                                            "fn": "relative-strength-index",
+                                            "params": {
+                                                "window": 10
+                                            },
+                                            "ticker": "%"
+                                        },
+                                        "comparator": "gt",
+                                        "rhs": {
+                                            "constant": 80
+                                        }
+                                    },
+                                    {
+                                        "condition-type": "binary-compound",
+                                        "operator": "any",
+                                        "tickers": [
+                                            "QQQ"
+                                        ],
+                                        "lhs": {
+                                            "fn": "relative-strength-index",
+                                            "params": {
+                                                "window": 10
+                                            },
+                                            "ticker": "%"
+                                        },
+                                        "comparator": "gt",
+                                        "rhs": {
+                                            "constant": 80
+                                        }
+                                    }
+                                ]
+                            },
+                            "lhs-val": "QQQ"
+                        },
+                        {
+                            "id": "a0f6a417-7eb0-4af8-a90a-ea1b4d848eca",
+                            "step": "if-child",
+                            "name": "Else",
+                            "suppress_incomplete_warnings": true,
+                            "children": [
+                                {
+                                    "id": "8d3f4714-abb6-4cf6-bdad-920e6d560db1",
+                                    "step": "asset",
+                                    "name": "Invesco QQQ Trust Series 1 - Invesco QQQ Trust Series 1",
+                                    "suppress_incomplete_warnings": false,
+                                    "ticker": "QQQ",
+                                    "exchange": "XNAS"
+                                }
+                            ],
+                            "is-else-condition?": true
+                        }
+                    ]
+                },
+                {
+                    "id": "80262f07-0593-4674-9de9-5fe6a85ecfe5",
+                    "step": "if",
+                    "name": "Condition",
+                    "suppress_incomplete_warnings": false,
+                    "children": [
+                        {
+                            "id": "6c496bdd-6c4f-4a01-a2ce-cb8385c4f5f1",
+                            "step": "if-child",
+                            "name": "If",
+                            "suppress_incomplete_warnings": false,
+                            "children": [
+                                {
+                                    "id": "2704e389-0bff-45f2-bb7a-da9af45451f3",
+                                    "step": "asset",
+                                    "name": "Direxion Shares ETF Trust - Direxion Daily S&P 500 Bull 3X ETF",
+                                    "suppress_incomplete_warnings": false,
+                                    "ticker": "SPXL",
+                                    "exchange": "ARCX"
+                                }
+                            ],
+                            "is-else-condition?": false,
+                            "condition": {
+                                "condition-type": "compound",
+                                "operator": "all",
+                                "conditions": [
+                                    {
+                                        "condition-type": "binary-compound",
+                                        "operator": "any",
+                                        "tickers": [
+                                            "SPY"
+                                        ],
+                                        "lhs": {
+                                            "fn": "current-price",
+                                            "params": {},
+                                            "ticker": "%"
+                                        },
+                                        "comparator": "gt",
+                                        "rhs": {
+                                            "fn": "moving-average-return",
+                                            "params": {
+                                                "window": 200
+                                            },
+                                            "ticker": "SPY"
+                                        }
+                                    },
+                                    {
+                                        "condition-type": "binary-compound",
+                                        "operator": "any",
+                                        "tickers": [
+                                            "SPY"
+                                        ],
+                                        "lhs": {
+                                            "fn": "current-price",
+                                            "params": {},
+                                            "ticker": "%"
+                                        },
+                                        "comparator": "gt",
+                                        "rhs": {
+                                            "fn": "moving-average-return",
+                                            "params": {
+                                                "window": 20
+                                            },
+                                            "ticker": "SPY"
+                                        }
+                                    }
+                                ]
+                            },
+                            "lhs-val": "SPY",
+                            "comparator": "gt"
+                        },
+                        {
+                            "id": "e00ffaa6-3654-43d6-abee-59fccebee8f0",
+                            "step": "if-child",
+                            "name": "Else",
+                            "suppress_incomplete_warnings": true,
+                            "children": [
+                                {
+                                    "id": "628b29d2-b269-433f-ae24-0b725f582cd0",
+                                    "step": "wt-cash-equal",
+                                    "name": "Weight",
+                                    "suppress_incomplete_warnings": false,
+                                    "children": [
+                                        {
+                                            "id": "c107255c-ae6e-4891-af59-408dea802c13",
+                                            "step": "if",
+                                            "name": "Condition",
+                                            "children": [
+                                                {
+                                                    "id": "986f5a91-2f20-4e04-b5df-bcf04b3015fd",
+                                                    "step": "if-child",
+                                                    "name": "If",
+                                                    "suppress_incomplete_warnings": false,
+                                                    "children": [
+                                                        {
+                                                            "id": "160b3971-4722-4c28-8a57-8d1477c9dcee",
+                                                            "step": "asset",
+                                                            "name": "SSgA Active Trust - State Street SPDR S&P 500 ETF Trust",
+                                                            "suppress_incomplete_warnings": false,
+                                                            "ticker": "SPY",
+                                                            "exchange": "ARCX"
+                                                        }
+                                                    ],
+                                                    "is-else-condition?": false,
+                                                    "lhs-fn": "current-price",
+                                                    "lhs-fn-params": {},
+                                                    "lhs-val": "SPY",
+                                                    "comparator": "gt",
+                                                    "rhs-fn": "moving-average-return",
+                                                    "rhs-fn-params": {
+                                                        "window": 200
+                                                    },
+                                                    "rhs-val": "SPY"
+                                                },
+                                                {
+                                                    "id": "a21fed4c-9dcf-4830-a62c-38ca8b0085f6",
+                                                    "step": "if-child",
+                                                    "name": "Else",
+                                                    "suppress_incomplete_warnings": true,
+                                                    "children": [
+                                                        {
+                                                            "id": "9de07ee4-c4e5-4569-8ff7-afb62cde2197",
+                                                            "step": "asset",
+                                                            "name": "SPDR Series Trust - State Street SPDR Bloomberg 1-3 Month T-Bill ETF",
+                                                            "suppress_incomplete_warnings": false,
+                                                            "ticker": "BIL",
+                                                            "exchange": "ARCX"
+                                                        }
+                                                    ],
+                                                    "is-else-condition?": true
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ],
+                            "is-else-condition?": true
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "description": "",
+    "rebalance": "daily"
+}
