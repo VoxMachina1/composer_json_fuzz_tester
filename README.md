@@ -1,25 +1,36 @@
-# RSI Tester — Strategy Discovery & Path Analysis Engine
+# RSI Search — Frontrunner Discovery & Strategy Insertion Engine
 
-A modular, zero-lookahead bias, multi-asset Python backtesting engine built for discovering alpha across large parameter grids. Extended with a strategy path extractor and automated frontrunner analysis pipeline for Composer.Trade strategies.
+A modular, zero-lookahead bias, multi-asset Python backtesting engine built for discovering alpha across large RSI parameter grids. Includes a full automated pipeline for extracting boolean paths from Composer.Trade strategies, backtesting frontrunner candidates against each path, filtering results, and inserting validated logic back into the strategy JSON.
+
+---
 
 ## Project Structure
 
 ```
-rsi_tester/
-├── run_analysis.py          # Orchestration script — runs the full pipeline
-├── setup_project.py         # Creates required folder structure
-├── requirements.txt
+rsi_search/
+├── run_analysis.py              # Step 1 — runs the full backtest pipeline
 │
 ├── pathfinder/
-│   ├── strategy_paths.py    # Extracts all boolean paths from a strategy JSON
-│   └── strategy.json        # Your Composer strategy export
+│   ├── strategy.json            # Your Composer strategy export (gitignored)
+│   ├── strategy_paths.py        # Extracts all boolean paths + node IDs
+│   └── paths.txt                # Auto-generated path output
+│
+├── strategy_filter/
+│   ├── filter_results.py        # Step 2 — filters and combines result CSVs
+│   ├── filtered.csv             # Combined filtered output (gitignored)
+│   └── filter_summary.txt       # Summary of last filter run (gitignored)
+│
+├── strategy_inserter/
+│   ├── strategy_inserter.py     # Step 3 — inserts frontrunner logic into JSON
+│   ├── strategy_modified.json   # Modified strategy output (gitignored)
+│   └── insertion_log.json       # Log of all insertions made (gitignored)
 │
 └── strategy_engine/
-    ├── main.py              # Manual backtest entry point
+    ├── .env                     # Tiingo API keys (gitignored, never commit)
     ├── config/
-    │   └── template.yaml    # Shared config for both manual and automated runs
-    ├── data/                # Auto-managed price CSVs (gitignored)
-    ├── results/             # Output CSVs (gitignored)
+    │   └── template.yaml        # All engine settings
+    ├── data/                    # Auto-managed price CSVs (gitignored)
+    ├── results/                 # Timestamped result CSVs (gitignored)
     └── src/
         ├── config_loader.py
         ├── data_alignment.py
@@ -32,108 +43,151 @@ rsi_tester/
         └── strategy_engine.py
 ```
 
+---
+
 ## Setup & Installation
 
 1. Clone the repository and navigate to the project root.
 2. Create and activate a Python virtual environment:
+
+   **Windows (PowerShell):**
    ```powershell
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
    ```
-3. Install the dependencies:
+
+   **Linux / macOS:**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+3. Install dependencies:
    ```
    pip install -r requirements.txt
    ```
-4. Run the project structure generator to create the necessary folders:
-   ```
-   python setup_project.py
-   ```
-5. Create a `.env` file inside `strategy_engine/` and add your Tiingo API keys (comma separated):
+
+4. Create a `.env` file inside `strategy_engine/` with your Tiingo API keys:
    ```
    TIINGO_API_KEYS=key1,key2,key3
    ```
 
+5. Place your Composer strategy export at `pathfinder/strategy.json`.
+
 ---
 
-## Automated Frontrunner Analysis Pipeline — `run_analysis.py`
+## Full Pipeline
 
-The primary workflow. Takes a Composer strategy JSON, extracts every possible boolean path to every endpoint asset, and runs the RSI discovery engine against all combinations of target and signal assets automatically.
+The pipeline runs in three steps. Each step produces output that feeds the next.
 
-```powershell
-python run_analysis.py pathfinder/strategy.json
+### Step 1 — Backtest (`run_analysis.py`)
+
+Run twice — once for overbought signals (`>`), once for oversold (`<`).
+
+**Run 1 — Overbought:**
+
+In `strategy_engine/config/template.yaml`, set:
+```yaml
+signal_operator: ">"
+threshold_start: 50.0
+threshold_end: 80.0
+```
+Then run:
+```bash
+python run_analysis.py
 ```
 
-**What it does:**
-1. Parses the strategy JSON using `strategy_paths.py` — extracts all 50+ endpoint paths
-2. For each path, translates the boolean conditions into engine-compatible precondition strings
-3. Sets the path's endpoint as the benchmark asset for that run
-4. Builds a candidate target asset list: all unique endpoint tickers from the strategy + `target_assets` from `template.yaml`, minus the benchmark
-5. Builds a signal asset list: tickers referenced in the path's preconditions + `EXTRA_SIGNAL_ASSETS`, minus the benchmark
-6. Runs the RSI threshold range tester across all path × target × signal × threshold combinations
-7. Writes a combined, timestamped CSV to `strategy_engine/results/`
+**Run 2 — Oversold:**
 
-**Configuring the pipeline:**
+Flip the operator and threshold range in `template.yaml`:
+```yaml
+signal_operator: "<"
+threshold_start: 20.0
+threshold_end: 50.0
+```
+Then run:
+```bash
+python run_analysis.py
+```
 
-All engine settings are read from `strategy_engine/config/template.yaml` — edit this file to change the threshold range, date range, slippage, indicator period, etc. The two lists hardcoded in `run_analysis.py` itself are:
+Each run produces a timestamped CSV in `strategy_engine/results/` with a `signal_operator` column recording which operator was used.
 
-- `EXTRA_SIGNAL_ASSETS` — signal tickers always included regardless of strategy content
-- `RESULTS_DIR` — output path for CSVs
+---
 
-**Output CSV columns:**
+### Step 2 — Filter (`strategy_filter/filter_results.py`)
 
-| Column | Description |
-|---|---|
-| `sub_strategy` | Which sleeve of the strategy (Bond Compares, KMLM, etc.) |
-| `conditions` | Full human-readable boolean condition chain |
-| `engine_precondition` | pandas-compatible precondition string |
-| `endpoint` | The strategy's endpoint asset (also serves as benchmark) |
-| `benchmark_asset` | Same as endpoint — what the strategy would otherwise hold |
-| `target_asset` | The candidate replacement asset being tested |
-| `signal_asset` | The asset whose RSI is being used as the signal |
-| `threshold` | The RSI threshold being tested |
-| `slippage_bps` | Slippage assumption in basis points |
-| `risk_free_rate` | Risk-free rate used for Sharpe/Sortino |
-| `Total_Trades` | Number of days signal was active |
-| `Win_Rate` | % of signal-active days where target beat benchmark |
-| `Avg_Return` | Mean daily return of target on signal-active days |
-| `Median_Return` | Median daily return of target on signal-active days |
-| `Benchmark_Avg_Return` | Mean daily return of benchmark on signal-active days |
-| `Benchmark_Median_Return` | Median daily return of benchmark on signal-active days |
-| `Total_Return` | Cumulative return over the backtest window |
-| `Annualized_Return` | Annualized return |
-| `Sharpe_Ratio` | Sharpe ratio |
-| `Sortino_Ratio` | Sortino ratio |
-| `Calmar_Ratio` | Calmar ratio |
-| `Max_Drawdown` | Maximum drawdown |
-| `Final_Equity` | Final equity multiplier (1.0 = no change) |
-| `Avg_Hold_Days` | Average consecutive days signal remains active |
+Automatically finds the two most recent CSVs in `strategy_engine/results/`, validates that one is all `>` and one is all `<`, applies performance filters, and combines them into a single `filtered.csv`.
 
-**Suggested Excel filters for identifying frontrunner candidates:**
-- `Win_Rate >= 0.75`
-- `Benchmark_Avg_Return < 0` (benchmark is down on signal days)
-- `Total_Trades >= 15` (minimum datapoint threshold)
-- `Median_Return` as tiebreaker within close win rate bands
+```bash
+python strategy_filter/filter_results.py
+```
+
+**Filter criteria (hardcoded):**
+- `Win_Rate > 0.75`
+- `Total_Trades > 20`
+- `Benchmark_Median_Return < 0`
+
+Output: `strategy_filter/filtered.csv` and `strategy_filter/filter_summary.txt`
+
+---
+
+### Step 3 — Insert (`strategy_inserter/strategy_inserter.py`)
+
+Reads `strategy_filter/filtered.csv` and inserts frontrunner logic into `pathfinder/strategy.json` at the exact validated nodes. Both overbought and oversold signals are processed in a single pass.
+
+```bash
+# Dry run first — no files written
+python strategy_inserter/strategy_inserter.py --dry-run
+
+# Full run
+python strategy_inserter/strategy_inserter.py
+```
+
+Output: `strategy_inserter/strategy_modified.json` and `strategy_inserter/insertion_log.json`
+
+Import `strategy_modified.json` into Composer.Trade to test the modified strategy.
+
+---
+
+## How the Inserter Works
+
+For each unique `(sub_strategy, conditions, endpoint)` group in the filtered CSV, the matching leaf asset node in the strategy JSON is replaced with a `wt-cash-equal` block. Each unique `(signal_asset, operator, most_inclusive_threshold)` triple becomes one `if` node:
+
+```
+wt-cash-equal
+  IF XLF_RSI_10 > 24    ->  [TQQQ, QQQ]     (overbought, shared threshold)
+    ELSE -> PSQ
+  IF XLF_RSI_10 < 25.5  ->  [TQQQ, QQQ]     (oversold, shared threshold)
+    ELSE -> PSQ
+  IF IOO_RSI_10 > 31    ->  [SOXL, UPRO]
+    ELSE -> PSQ
+```
+
+**Threshold deduplication** — for each `(signal_asset, operator, target)` triple, only the most inclusive threshold is kept:
+- `>` operator: minimum threshold (fires most often)
+- `<` operator: maximum threshold (fires most often)
+
+**Tautology detection** — if the same signal asset appears with both `>` and `<` at thresholds that together always evaluate true (e.g. RSI > 16 OR RSI < 18.5), that signal asset is skipped with a warning.
+
+**Target grouping** — targets sharing the same `(signal_asset, operator, threshold)` are listed as equal-weight siblings in the same `if` node's true branch.
 
 ---
 
 ## Path Extractor — `pathfinder/strategy_paths.py`
 
-Standalone script that parses a Composer/VOXPORT strategy JSON and prints every possible boolean path to a leaf endpoint, grouped by endpoint ticker.
+Parses a Composer strategy JSON and emits every possible boolean path to every leaf endpoint, grouped by ticker. Also writes `pathfinder/paths.txt`.
 
-```powershell
-python pathfinder/strategy_paths.py pathfinder/strategy.json
-python pathfinder/strategy_paths.py pathfinder/strategy.json > pathfinder/paths.txt
+```bash
+python pathfinder/strategy_paths.py
 ```
 
-Each line shows the sub-strategy sleeve, the full condition chain, and the endpoint:
+Each path shows the sub-strategy sleeve, full condition chain, endpoint ticker, and the JSON node ID of the leaf asset node:
 ```
-[Bond Compares] IF Price(SPY) > MA(SPY, 200) AND RSI(TLT, 20) > RSI(PSQ, 20) -> TQQQ
-[FTLT] IF Price(SPY) > MA(SPY, 200) AND RSI(QQQ, 10) > 79 -> BIL
+[Bond Compares] IF Price(SPY) > MA(SPY, 200) AND RSI(TLT, 20) > RSI(PSQ, 20) -> TQQQ  (node_id: a3c0604a-...)
+[FTLT] IF Price(SPY) > MA(SPY, 200) AND RSI(QQQ, 10) <= 79 -> TQQQ  (node_id: beb628c6-...)
 ```
 
-Each path also carries an `engine_precondition` field (used internally by `run_analysis.py`) — a pandas-compatible translation of the condition chain ready for use in `evaluate_preconditions()`.
-
-Asset-selection filters (e.g. "Top 1 by RSI from SQQQ, TLT") are expanded into explicit pairwise conditions:
+Asset-selection filters are expanded into explicit pairwise conditions:
 ```
 RSI(SQQQ, 10) > RSI(TLT, 10) -> SQQQ
 RSI(TLT, 10) > RSI(SQQQ, 10) -> TLT
@@ -141,31 +195,54 @@ RSI(TLT, 10) > RSI(SQQQ, 10) -> TLT
 
 ---
 
-## Manual Backtest — `strategy_engine/main.py`
+## Output CSV Columns
 
-For running individual backtests against a YAML config file:
-
-```powershell
-python strategy_engine/main.py --config config/your_config.yaml
-```
+| Column | Description |
+|---|---|
+| `sub_strategy` | Strategy sleeve (Bond Compares, KMLM, etc.) |
+| `conditions` | Human-readable boolean condition chain |
+| `engine_precondition` | pandas-compatible precondition string |
+| `endpoint` | Strategy endpoint asset (serves as benchmark) |
+| `benchmark_asset` | Same as endpoint |
+| `target_asset` | Candidate frontrunner asset being tested |
+| `signal_asset` | Asset whose RSI drives the signal |
+| `signal_operator` | RSI comparison operator (`>` or `<`) |
+| `threshold` | RSI threshold being tested |
+| `slippage_bps` | Slippage assumption in basis points |
+| `risk_free_rate` | Risk-free rate for Sharpe/Sortino |
+| `Total_Trades` | Days signal was active |
+| `Win_Rate` | % of signal-active days target beat benchmark |
+| `Avg_Return` | Mean daily return on signal-active days |
+| `Median_Return` | Median daily return on signal-active days |
+| `Benchmark_Avg_Return` | Mean daily benchmark return on signal-active days |
+| `Benchmark_Median_Return` | Median daily benchmark return on signal-active days |
+| `Total_Return` | Cumulative return over backtest window |
+| `Annualized_Return` | Annualized return |
+| `Sharpe_Ratio` | Sharpe ratio |
+| `Sortino_Ratio` | Sortino ratio |
+| `Calmar_Ratio` | Calmar ratio |
+| `Max_Drawdown` | Maximum drawdown |
+| `Final_Equity` | Final equity multiplier (1.0 = no change) |
+| `Avg_Hold_Days` | Average consecutive days signal stays active |
 
 ---
 
 ## template.yaml Reference
 
-All settings shared between manual and automated runs live here:
-
 ```yaml
-# Assets to test as frontrunner targets in the automated pipeline
+# Candidate frontrunner target assets
 target_assets: ["BIL", "UVXY"]
 
-benchmark_asset: "SPY"       # Used in manual runs only
+benchmark_asset: "SPY"       # Manual runs only
 indicator: "RSI"
 indicator_period: 10
+
+# Flip between runs: ">" for overbought, "<" for oversold
 signal_operator: ">"
-threshold_start: 50.0
-threshold_end: 80.0
+threshold_start: 50.0        # Use 20.0 for oversold run
+threshold_end: 80.0          # Use 50.0 for oversold run
 threshold_step: 0.5
+
 slippage_bps: 1.0
 risk_free_rate: 0.0
 
@@ -176,14 +253,13 @@ date_range:
 
 ---
 
-## How to Match Composer.Trade Output
+## Matching Composer.Trade Settings
 
 | Setting | Value | Reason |
 |---|---|---|
-| `signal_operator` | `">"` | Composer uses strict greater-than |
 | `slippage_bps` | `1.0` | Composer's default slippage assumption |
-| `risk_free_rate` | `0.0` | Composer assumes 0% risk-free rate for Sharpe/Sortino |
-| `date_range.start` | match Composer chart | Align the backtest window exactly |
+| `risk_free_rate` | `0.0` | Composer assumes 0% risk-free rate |
+| `date_range.start` | match Composer chart | Align backtest window exactly |
 
 ---
 
