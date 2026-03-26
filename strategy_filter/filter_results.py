@@ -10,6 +10,8 @@ Filter criteria (hardcoded — see memory note for future configurability):
   - Total_Trades > 20
   - Benchmark_Median_Return < 0
 
+Can be run standalone or imported by run_analysis.py (Mode 1).
+
 Canonical inputs:  two most recent CSVs in strategy_engine/results/
 Canonical output:  strategy_filter/filtered.csv
 
@@ -37,8 +39,8 @@ SUMMARY_TXT = _HERE / "filter_summary.txt"
 # (TODO: make configurable — see project memory note)
 # ---------------------------------------------------------------------------
 
-WIN_RATE_MIN              = 0.75
-TOTAL_TRADES_MIN          = 20
+WIN_RATE_MIN                = 0.75
+TOTAL_TRADES_MIN            = 20
 BENCHMARK_MEDIAN_RETURN_MAX = 0.0
 
 
@@ -48,7 +50,7 @@ BENCHMARK_MEDIAN_RETURN_MAX = 0.0
 
 def find_two_most_recent_csvs(results_dir):
     """
-    Scan results_dir for CSV files, excluding filtered.csv and any lock files.
+    Scan results_dir for CSV files, excluding filtered.csv and lock files.
     Return the two most recently modified, or error if fewer than 2 exist.
     """
     candidates = [
@@ -59,13 +61,24 @@ def find_two_most_recent_csvs(results_dir):
     ]
 
     if len(candidates) < 2:
-        print(f"ERROR: Need at least 2 CSVs in {results_dir}, found {len(candidates)}.",
-              file=sys.stderr)
+        print(f"ERROR: Need at least 2 CSVs in {results_dir}, "
+              f"found {len(candidates)}.", file=sys.stderr)
         sys.exit(1)
 
-    # Sort by modification time, most recent first
     candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     return candidates[0], candidates[1]
+
+
+def find_two_specific_csvs(path_gt, path_lt):
+    """
+    Accept two explicit Path objects (already validated by run_analysis.py
+    Mode 1). Returns them as (df_gt, df_lt, path_gt, path_lt) directly,
+    bypassing file discovery and operator validation since the caller
+    already knows which is which.
+    """
+    df_gt = pd.read_csv(path_gt)
+    df_lt = pd.read_csv(path_lt)
+    return df_gt, df_lt, path_gt, path_lt
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +89,7 @@ def validate_and_assign(csv_a, csv_b):
     """
     Load both CSVs, check that each has a signal_operator column,
     and that one is exclusively '>' and the other exclusively '<'.
-
-    Returns (df_gt, df_lt) — the '>' DataFrame and '<' DataFrame.
+    Returns (df_gt, df_lt, path_gt, path_lt).
     """
     df_a = pd.read_csv(csv_a)
     df_b = pd.read_csv(csv_b)
@@ -86,8 +98,7 @@ def validate_and_assign(csv_a, csv_b):
         if "signal_operator" not in df.columns:
             print(
                 f"ERROR: '{path.name}' has no signal_operator column.\n"
-                f"  Re-run run_analysis.py with the updated version to generate "
-                f"CSVs that include this column.",
+                f"  Re-run run_analysis.py to generate CSVs with this column.",
                 file=sys.stderr
             )
             sys.exit(1)
@@ -95,13 +106,11 @@ def validate_and_assign(csv_a, csv_b):
     ops_a = set(df_a["signal_operator"].unique())
     ops_b = set(df_b["signal_operator"].unique())
 
-    # Each CSV must be exclusively one operator
     for ops, path in [(ops_a, csv_a), (ops_b, csv_b)]:
         if len(ops) > 1:
             print(
                 f"ERROR: '{path.name}' contains mixed operators: {ops}.\n"
-                f"  Each CSV should come from a single run_analysis.py run "
-                f"with one operator in template.yaml.",
+                f"  Each CSV should come from a single run_analysis.py run.",
                 file=sys.stderr
             )
             sys.exit(1)
@@ -109,11 +118,11 @@ def validate_and_assign(csv_a, csv_b):
     op_a = next(iter(ops_a))
     op_b = next(iter(ops_b))
 
-    # Must be one '>' and one '<'
     if not ({op_a, op_b} == {">", "<"}):
         print(
-            f"ERROR: Expected one '>' CSV and one '<' CSV, got '{op_a}' and '{op_b}'.\n"
-            f"  Make sure you ran run_analysis.py twice with different operators.",
+            f"ERROR: Expected one '>' CSV and one '<' CSV, "
+            f"got '{op_a}' and '{op_b}'.\n"
+            f"  Run run_analysis.py twice with different operators.",
             file=sys.stderr
         )
         sys.exit(1)
@@ -130,46 +139,64 @@ def validate_and_assign(csv_a, csv_b):
 
 def apply_filters(df, label):
     """
-    Apply the hardcoded performance filters and return the filtered DataFrame.
-    Prints a summary of how many rows passed.
+    Apply hardcoded performance filters. Returns filtered DataFrame.
     """
     before = len(df)
 
     mask = (
-        (df["Win_Rate"]               > WIN_RATE_MIN)              &
-        (df["Total_Trades"]           > TOTAL_TRADES_MIN)          &
+        (df["Win_Rate"]                > WIN_RATE_MIN)               &
+        (df["Total_Trades"]            > TOTAL_TRADES_MIN)           &
         (df["Benchmark_Median_Return"] < BENCHMARK_MEDIAN_RETURN_MAX)
     )
 
     filtered = df[mask].copy()
     after = len(filtered)
 
-    print(f"  [{label}] {before:,} rows -> {after:,} passed filters "
+    print(f"  [{label}] {before:,} rows -> {after:,} passed "
           f"({before - after:,} removed)")
 
     return filtered
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Core pipeline — callable by both main() and run_analysis.py Mode 1
 # ---------------------------------------------------------------------------
 
-def main():
+def run_filter(path_gt=None, path_lt=None):
+    """
+    Execute the full filter pipeline.
+
+    If path_gt and path_lt are provided (Path objects), use them directly —
+    this is the Mode 1 path called from run_analysis.py after both passes
+    complete, bypassing file discovery and operator validation.
+
+    If neither is provided, auto-discover the two most recent CSVs in
+    strategy_engine/results/ and validate their operators — this is the
+    standalone usage path.
+
+    Returns the output CSV path on success.
+    """
     print(f"\n{'='*60}")
     print(f"  FILTER RESULTS PIPELINE")
     print(f"{'='*60}\n")
 
-    # 1. Find the two most recent CSVs
-    csv_recent, csv_older = find_two_most_recent_csvs(RESULTS_DIR)
-    print(f"Most recent CSV:  {csv_recent.name}")
-    print(f"Second recent CSV: {csv_older.name}\n")
+    if path_gt is not None and path_lt is not None:
+        # Called from run_analysis.py Mode 1 — paths already known
+        df_gt = pd.read_csv(path_gt)
+        df_lt = pd.read_csv(path_lt)
+        print(f"Overbought ('>'):  {path_gt.name}  ({len(df_gt):,} rows)")
+        print(f"Oversold  ('<'):   {path_lt.name}  ({len(df_lt):,} rows)\n")
+    else:
+        # Standalone — auto-discover and validate
+        csv_recent, csv_older = find_two_most_recent_csvs(RESULTS_DIR)
+        print(f"Most recent CSV:   {csv_recent.name}")
+        print(f"Second recent CSV: {csv_older.name}\n")
 
-    # 2. Validate operators and assign
-    df_gt, df_lt, path_gt, path_lt = validate_and_assign(csv_recent, csv_older)
-    print(f"Overbought ('>'):  {path_gt.name}  ({len(df_gt):,} rows)")
-    print(f"Oversold  ('<'):   {path_lt.name}  ({len(df_lt):,} rows)\n")
+        df_gt, df_lt, path_gt, path_lt = validate_and_assign(csv_recent, csv_older)
+        print(f"Overbought ('>'):  {path_gt.name}  ({len(df_gt):,} rows)")
+        print(f"Oversold  ('<'):   {path_lt.name}  ({len(df_lt):,} rows)\n")
 
-    # 3. Apply filters
+    # Apply filters
     print(f"Applying filters:")
     print(f"  Win_Rate > {WIN_RATE_MIN}")
     print(f"  Total_Trades > {TOTAL_TRADES_MIN}")
@@ -178,7 +205,7 @@ def main():
     filtered_gt = apply_filters(df_gt, "overbought >")
     filtered_lt = apply_filters(df_lt, "oversold  <")
 
-    # 4. Combine
+    # Combine
     combined = pd.concat([filtered_gt, filtered_lt], ignore_index=True)
     print(f"\n  Combined: {len(combined):,} rows total")
 
@@ -186,12 +213,12 @@ def main():
         print("\nWARNING: No rows passed filters. filtered.csv will be empty.",
               file=sys.stderr)
 
-    # 5. Write output
+    # Write output
     _HERE.mkdir(parents=True, exist_ok=True)
     combined.to_csv(OUTPUT_CSV, index=False)
     print(f"\n  Output written to: {OUTPUT_CSV}")
 
-    # 6. Write summary
+    # Write summary
     summary_lines = [
         f"Filter Results Summary",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -217,6 +244,15 @@ def main():
     print(f"  Summary written to: {SUMMARY_TXT}")
 
     print(f"\n{'='*60}\n")
+    return OUTPUT_CSV
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    run_filter()
 
 
 if __name__ == "__main__":
