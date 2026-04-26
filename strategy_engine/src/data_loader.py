@@ -14,7 +14,8 @@ def get_latest_tiingo_date(api_keys):
     Fetches the most recent trading date available on Tiingo using SPY.
     This ensures we sync perfectly with the provider's update schedule.
     """
-    url = "https://api.tiingo.com/tiingo/daily/SPY/prices"
+    safe_ticker = ticker.replace("/", "-")
+    url = f"https://api.tiingo.com/tiingo/daily/{safe_ticker}/prices"
     
     # Check the last 10 days to guarantee we catch the latest trading day
     start_check = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -65,7 +66,7 @@ def download_ticker_data(ticker, api_keys, data_dir):
     df = df[['date', 'adjClose']].rename(columns={'adjClose': 'close'})
     
     os.makedirs(data_dir, exist_ok=True)
-    file_path = data_dir / f"{ticker}.csv"
+    file_path = data_dir / f"{safe_ticker}.csv"
     df.to_csv(file_path, index=False)
     print(f"[{ticker}] Successfully saved {len(df)} rows to {file_path}")
     return True
@@ -80,7 +81,7 @@ def check_freshness_and_update(tickers, api_keys, data_dir):
     print(f"Latest US trading day on Tiingo: {latest_market_date}")
     
     for ticker in tickers:
-        file_path = data_dir / f"{ticker}.csv"
+        file_path = data_dir / f"{ticker.replace('/', '-')}.csv"
         needs_rebuild = True
         
         if file_path.exists():

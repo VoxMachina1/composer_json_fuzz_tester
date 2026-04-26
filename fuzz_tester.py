@@ -1883,7 +1883,8 @@ def main():
     html = generate_html(conditions, sweep_results, fragility_scores, config)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = SCRIPT_DIR / f"fuzz_report_{ts}.html"
+    json_stem = Path(config["json_path"]).stem
+    out_path = SCRIPT_DIR / f"fuzz_report_{json_stem}_{ts}.html"
     out_path.write_text(html, encoding="utf-8")
 
     print(f"\n  ✓ Report saved to: {out_path}\n")

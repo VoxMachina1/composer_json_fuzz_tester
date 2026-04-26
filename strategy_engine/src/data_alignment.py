@@ -7,7 +7,7 @@ def load_ticker_csv(ticker, data_dir):
     Reads the price CSV for a given ticker.
     Converts 'date' to a pandas datetime object and sorts chronologically.
     """
-    file_path = data_dir / f"{ticker}.csv"
+    file_path = data_dir / f"{ticker.replace('/', '-')}.csv"
     if not file_path.exists():
         raise FileNotFoundError(f"Data file for {ticker} not found at {file_path}")
         
