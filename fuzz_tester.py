@@ -873,12 +873,15 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                     "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
                     "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
-    # ---- EMA vs EMA (1D period sweep) ----
+    # ---- EMA vs EMA (2D period sweep: lhs window x rhs window) ----
     elif cat == "EMA_vs_EMA":
-        base_period = lhs.get("window") or 10
+        base_period_l = lhs.get("window") or 10
+        base_period_r = rhs.get("window") or 10
         fuzz_r      = fuzz.get("MA", 0.3)
-        period_lo   = max(2, round(base_period * (1 - fuzz_r)))
-        period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        period_l_lo = max(2, round(base_period_l * (1 - fuzz_r)))
+        period_l_hi = max(3, round(base_period_l * (1 + fuzz_r)))
+        period_r_lo = max(2, round(base_period_r * (1 - fuzz_r)))
+        period_r_hi = max(3, round(base_period_r * (1 + fuzz_r)))
 
         try:
             price_l = load_price_series(lhs["ticker"])
@@ -892,39 +895,41 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
             return None, f"No data for endpoint {endpoint}"
 
         comp    = cond["comparator"]
-        periods = range(period_lo, period_hi + 1, config["period_step"])
+        periods_l = range(period_l_lo, period_l_hi + 1, config["period_step"])
+        periods_r = range(period_r_lo, period_r_hi + 1, config["period_step"])
 
-        for period in periods:
-            ema_l = calculate_ema(price_l, period)
-            ema_r = calculate_ema(price_r, period)
-            combined = pd.DataFrame({"ema_l": ema_l, "ema_r": ema_r, "ep": ep_price}).dropna()
-            combined = combined[(combined.index >= start) & (combined.index <= end)]
-            if len(combined) < 20: continue
+        for period_l in periods_l:
+            ema_l = calculate_ema(price_l, period_l)
+            for period_r in periods_r:
+                ema_r = calculate_ema(price_r, period_r)
+                combined = pd.DataFrame({"ema_l": ema_l, "ema_r": ema_r, "ep": ep_price}).dropna()
+                combined = combined[(combined.index >= start) & (combined.index <= end)]
+                if len(combined) < 20: continue
 
-            if comp == "gt":   fired = combined["ema_l"] > combined["ema_r"]
-            elif comp == "lt": fired = combined["ema_l"] < combined["ema_r"]
-            else:              fired = combined["ema_l"] > combined["ema_r"]
+                if comp == "gt":   fired = combined["ema_l"] > combined["ema_r"]
+                elif comp == "lt": fired = combined["ema_l"] < combined["ema_r"]
+                else:              fired = combined["ema_l"] > combined["ema_r"]
 
-            fired_idx     = combined.index[fired]
-            if len(fired_idx) < 2: continue
-            ep_returns    = combined["ep"].pct_change().shift(-1)
-            fired_returns = ep_returns.loc[fired_idx].dropna()
-            bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
-            prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
+                fired_idx     = combined.index[fired]
+                if len(fired_idx) < 2: continue
+                ep_returns    = combined["ep"].pct_change().shift(-1)
+                fired_returns = ep_returns.loc[fired_idx].dropna()
+                bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
+                prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
 
-            wins      = (fired_returns.values > bil_aligned.values).sum()
-            prim_wins = (fired_returns.values > prim_aligned.values).sum()
-            total     = len(fired_returns)
-            win_rate  = wins / total if total > 0 else 0.0
-            gains     = fired_returns[fired_returns > 0].sum()
-            losses    = abs(fired_returns[fired_returns < 0].sum())
-            pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
-            score     = win_rate * math.log(max(total, 1))
+                wins      = (fired_returns.values > bil_aligned.values).sum()
+                prim_wins = (fired_returns.values > prim_aligned.values).sum()
+                total     = len(fired_returns)
+                win_rate  = wins / total if total > 0 else 0.0
+                gains     = fired_returns[fired_returns > 0].sum()
+                losses    = abs(fired_returns[fired_returns < 0].sum())
+                pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
+                score     = win_rate * math.log(max(total, 1))
 
-            results.append({"period": period, "param": "win_rate",
-                "win_rate": round(win_rate, 4), "total_trades": total,
-                "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
-                "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
+                results.append({"period": period_l, "param": period_r,
+                    "win_rate": round(win_rate, 4), "total_trades": total,
+                    "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
+                    "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
     # ---- MaxDD vs fixed threshold ----
     elif cat in ("MaxDD_fixed", "MAReturn_fixed"):
@@ -1050,10 +1055,13 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 "score": round(score, 4), "profit_factor": round(pf, 4),
                 "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
     elif cat == "CumRet_vs_CumRet":
-        base_period = lhs["window"]
+        base_period_l = lhs.get("window") or 10
+        base_period_r = rhs.get("window") or 10
         fuzz_r      = fuzz.get("CumRet", 0.2)
-        period_lo   = max(2, round(base_period * (1 - fuzz_r)))
-        period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        period_l_lo = max(2, round(base_period_l * (1 - fuzz_r)))
+        period_l_hi = max(3, round(base_period_l * (1 + fuzz_r)))
+        period_r_lo = max(2, round(base_period_r * (1 - fuzz_r)))
+        period_r_hi = max(3, round(base_period_r * (1 + fuzz_r)))
         ticker_l = lhs["ticker"]
         ticker_r = rhs["ticker"]
         try:
@@ -1066,41 +1074,46 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         except FileNotFoundError:
             return None, f"No data for endpoint {endpoint}"
         comp    = cond["comparator"]
-        periods = range(period_lo, period_hi + 1, config["period_step"])
-        for period in periods:
-            cr_l = calculate_cumret(price_l, period)
-            cr_r = calculate_cumret(price_r, period)
-            combined = pd.DataFrame({"cr_l": cr_l, "cr_r": cr_r, "ep": ep_price}).dropna()
-            combined = combined[(combined.index >= start) & (combined.index <= end)]
-            if len(combined) < 20:
-                continue
-            if comp == "gt":   fired = combined["cr_l"] > combined["cr_r"]
-            elif comp == "lt": fired = combined["cr_l"] < combined["cr_r"]
-            else:              fired = combined["cr_l"] > combined["cr_r"]
-            fired_idx     = combined.index[fired]
-            if len(fired_idx) < 2: continue
-            ep_returns    = combined["ep"].pct_change().shift(-1)
-            fired_returns = ep_returns.loc[fired_idx].dropna()
-            bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
-            prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
-            wins      = (fired_returns.values > bil_aligned.values).sum()
-            prim_wins = (fired_returns.values > prim_aligned.values).sum()
-            total     = len(fired_returns)
-            win_rate  = wins / total if total > 0 else 0.0
-            gains     = fired_returns[fired_returns > 0].sum()
-            losses    = abs(fired_returns[fired_returns < 0].sum())
-            pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
-            score     = win_rate * math.log(max(total, 1))
-            results.append({"period": period, "param": "win_rate",
-                "win_rate": round(win_rate, 4), "total_trades": total,
-                "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
-                "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
+        periods_l = range(period_l_lo, period_l_hi + 1, config["period_step"])
+        periods_r = range(period_r_lo, period_r_hi + 1, config["period_step"])
+        for period_l in periods_l:
+            cr_l = calculate_cumret(price_l, period_l)
+            for period_r in periods_r:
+                cr_r = calculate_cumret(price_r, period_r)
+                combined = pd.DataFrame({"cr_l": cr_l, "cr_r": cr_r, "ep": ep_price}).dropna()
+                combined = combined[(combined.index >= start) & (combined.index <= end)]
+                if len(combined) < 20:
+                    continue
+                if comp == "gt":   fired = combined["cr_l"] > combined["cr_r"]
+                elif comp == "lt": fired = combined["cr_l"] < combined["cr_r"]
+                else:              fired = combined["cr_l"] > combined["cr_r"]
+                fired_idx     = combined.index[fired]
+                if len(fired_idx) < 2: continue
+                ep_returns    = combined["ep"].pct_change().shift(-1)
+                fired_returns = ep_returns.loc[fired_idx].dropna()
+                bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
+                prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
+                wins      = (fired_returns.values > bil_aligned.values).sum()
+                prim_wins = (fired_returns.values > prim_aligned.values).sum()
+                total     = len(fired_returns)
+                win_rate  = wins / total if total > 0 else 0.0
+                gains     = fired_returns[fired_returns > 0].sum()
+                losses    = abs(fired_returns[fired_returns < 0].sum())
+                pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
+                score     = win_rate * math.log(max(total, 1))
+                results.append({"period": period_l, "param": period_r,
+                    "win_rate": round(win_rate, 4), "total_trades": total,
+                    "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
+                    "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
     elif cat == "MA_vs_MA":
-        base_period = lhs["window"]
+        base_period_l = lhs.get("window") or 10
+        base_period_r = rhs.get("window") or 10
         fuzz_r      = fuzz.get("MA", 0.3)
-        period_lo   = max(2, round(base_period * (1 - fuzz_r)))
-        period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        period_l_lo = max(2, round(base_period_l * (1 - fuzz_r)))
+        period_l_hi = max(3, round(base_period_l * (1 + fuzz_r)))
+        period_r_lo = max(2, round(base_period_r * (1 - fuzz_r)))
+        period_r_hi = max(3, round(base_period_r * (1 + fuzz_r)))
         ticker_l = lhs["ticker"]
         ticker_r = rhs["ticker"]
         try:
@@ -1112,36 +1125,38 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
             ep_price = load_price_series(endpoint)
         except FileNotFoundError:
             return None, f"No data for endpoint {endpoint}"
-        comp    = cond["comparator"]
-        periods = range(period_lo, period_hi + 1, config["period_step"])
-        for period in periods:
-            ma_l = calculate_sma(price_l, period)
-            ma_r = calculate_sma(price_r, period)
-            combined = pd.DataFrame({"ma_l": ma_l, "ma_r": ma_r, "ep": ep_price}).dropna()
-            combined = combined[(combined.index >= start) & (combined.index <= end)]
-            if len(combined) < 20:
-                continue
-            if comp == "gt":   fired = combined["ma_l"] > combined["ma_r"]
-            elif comp == "lt": fired = combined["ma_l"] < combined["ma_r"]
-            else:              fired = combined["ma_l"] > combined["ma_r"]
-            fired_idx     = combined.index[fired]
-            if len(fired_idx) < 2: continue
-            ep_returns    = combined["ep"].pct_change().shift(-1)
-            fired_returns = ep_returns.loc[fired_idx].dropna()
-            bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
-            prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
-            wins      = (fired_returns.values > bil_aligned.values).sum()
-            prim_wins = (fired_returns.values > prim_aligned.values).sum()
-            total     = len(fired_returns)
-            win_rate  = wins / total if total > 0 else 0.0
-            gains     = fired_returns[fired_returns > 0].sum()
-            losses    = abs(fired_returns[fired_returns < 0].sum())
-            pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
-            score     = win_rate * math.log(max(total, 1))
-            results.append({"period": period, "param": "win_rate",
-                "win_rate": round(win_rate, 4), "total_trades": total,
-                "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
-                "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
+        comp      = cond["comparator"]
+        periods_l = range(period_l_lo, period_l_hi + 1, config["period_step"])
+        periods_r = range(period_r_lo, period_r_hi + 1, config["period_step"])
+        for period_l in periods_l:
+            ma_l = calculate_sma(price_l, period_l)
+            for period_r in periods_r:
+                ma_r = calculate_sma(price_r, period_r)
+                combined = pd.DataFrame({"ma_l": ma_l, "ma_r": ma_r, "ep": ep_price}).dropna()
+                combined = combined[(combined.index >= start) & (combined.index <= end)]
+                if len(combined) < 20:
+                    continue
+                if comp == "gt":   fired = combined["ma_l"] > combined["ma_r"]
+                elif comp == "lt": fired = combined["ma_l"] < combined["ma_r"]
+                else:              fired = combined["ma_l"] > combined["ma_r"]
+                fired_idx     = combined.index[fired]
+                if len(fired_idx) < 2: continue
+                ep_returns    = combined["ep"].pct_change().shift(-1)
+                fired_returns = ep_returns.loc[fired_idx].dropna()
+                bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
+                prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
+                wins      = (fired_returns.values > bil_aligned.values).sum()
+                prim_wins = (fired_returns.values > prim_aligned.values).sum()
+                total     = len(fired_returns)
+                win_rate  = wins / total if total > 0 else 0.0
+                gains     = fired_returns[fired_returns > 0].sum()
+                losses    = abs(fired_returns[fired_returns < 0].sum())
+                pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
+                score     = win_rate * math.log(max(total, 1))
+                results.append({"period": period_l, "param": period_r,
+                    "win_rate": round(win_rate, 4), "total_trades": total,
+                    "score": round(score, 4), "profit_factor": round(min(pf, 99.0), 4),
+                    "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
     
     else:
         return None, f"Unsupported category: {cat}"

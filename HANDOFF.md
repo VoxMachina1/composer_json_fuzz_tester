@@ -69,16 +69,16 @@ Each condition dict has these keys:
 | Category | Sweep |
 |---|---|
 | RSI_fixed | 2D: period × threshold |
-| RSI_vs_RSI | 1D currently; target 2D: lhs_period × rhs_period |
+| RSI_vs_RSI | 2D: lhs_period × rhs_period |
 | CumRet_fixed | 2D: period × threshold |
-| CumRet_vs_CumRet | 1D currently; target 2D: lhs_period × rhs_period |
+| CumRet_vs_CumRet | 2D: lhs_period × rhs_period |
 | MaxDD_fixed | 2D: period × threshold |
 | MaxDD_vs_MaxDD | 1D currently; target 2D: lhs_period × rhs_period |
 | Price_vs_MA | 1D: MA window |
 | MA_vs_MA | 2D: short window × long window |
 | Price_vs_EMA | 1D: EMA window |
 | EMA_vs_MA | 2D: EMA window × MA window |
-| EMA_vs_EMA | 1D currently; target 2D: lhs_period × rhs_period |
+| EMA_vs_EMA | 2D: lhs_period × rhs_period |
 | MAReturn_fixed / MAReturn_vs_MAReturn | MAReturn now has its own calc; vs-family still 1D currently |
 
 ---
@@ -162,7 +162,7 @@ python fuzz_tester.py
 
 ## Suggested First Task
 
-Start 2D sweep expansion by converting `RSI_vs_RSI` from shared-period 1D to independent-window 2D (`lhs_period × rhs_period`) in `sweep_condition()` inside `fuzz_tester.py`. Use this as the reference pattern for the other remaining `*_vs_*` families.
+Continue 2D sweep expansion for remaining 1D `*_vs_*` families. Next practical target is the drawdown/return comparison branch (`MaxDD_vs_MaxDD`, `MAReturn_vs_MAReturn`, and mixed variants) to move from shared-period 1D to independent-window 2D (`lhs_period × rhs_period`).
 
 
 ## This document *may* not be complete, as Claude ran out of tokens and failed to output a succsess message.
