@@ -995,12 +995,15 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                     "score": round(score, 4), "profit_factor": round(pf, 4),
                     "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
-    # ---- MaxDD vs MaxDD (sort by drawdown — 1D window sweep) ----
+    # ---- Drawdown/return family comparisons (2D window sweep) ----
     elif cat in ("MaxDD_vs_MaxDD", "MAReturn_vs_MAReturn", "MaxDD_vs_MAReturn", "MAReturn_vs_MaxDD"):
-        base_period = lhs["window"]
+        base_period_l = lhs.get("window") or 10
+        base_period_r = rhs.get("window") or 10
         fuzz_r      = fuzz.get("MaxDD", 0.2)
-        period_lo   = max(2, round(base_period * (1 - fuzz_r)))
-        period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        period_l_lo = max(2, round(base_period_l * (1 - fuzz_r)))
+        period_l_hi = max(3, round(base_period_l * (1 + fuzz_r)))
+        period_r_lo = max(2, round(base_period_r * (1 - fuzz_r)))
+        period_r_hi = max(3, round(base_period_r * (1 + fuzz_r)))
         lhs_fn      = lhs["fn_label"]
         rhs_fn      = rhs["fn_label"]
 
@@ -1017,43 +1020,45 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         except FileNotFoundError:
             return None, f"No data for endpoint {endpoint}"
 
-        comp    = cond["comparator"]
-        periods = range(period_lo, period_hi + 1, config["period_step"])
+        comp      = cond["comparator"]
+        periods_l = range(period_l_lo, period_l_hi + 1, config["period_step"])
+        periods_r = range(period_r_lo, period_r_hi + 1, config["period_step"])
 
-        for period in periods:
-            metric_l = compute_indicator(price_l, lhs_fn, period)
-            metric_r = compute_indicator(price_r, rhs_fn, period)
-            combined = pd.DataFrame({"metric_l": metric_l, "metric_r": metric_r, "ep": ep_price}).dropna()
-            combined = combined[(combined.index >= start) & (combined.index <= end)]
-            if len(combined) < 20:
-                continue
+        for period_l in periods_l:
+            metric_l = compute_indicator(price_l, lhs_fn, period_l)
+            for period_r in periods_r:
+                metric_r = compute_indicator(price_r, rhs_fn, period_r)
+                combined = pd.DataFrame({"metric_l": metric_l, "metric_r": metric_r, "ep": ep_price}).dropna()
+                combined = combined[(combined.index >= start) & (combined.index <= end)]
+                if len(combined) < 20:
+                    continue
 
-            if comp == "gt":   fired = combined["metric_l"] > combined["metric_r"]
-            elif comp == "lt": fired = combined["metric_l"] < combined["metric_r"]
-            else:              fired = combined["metric_l"] < combined["metric_r"]
+                if comp == "gt":   fired = combined["metric_l"] > combined["metric_r"]
+                elif comp == "lt": fired = combined["metric_l"] < combined["metric_r"]
+                else:              fired = combined["metric_l"] < combined["metric_r"]
 
-            fired_idx = combined.index[fired]
-            if len(fired_idx) < 2:
-                continue
+                fired_idx = combined.index[fired]
+                if len(fired_idx) < 2:
+                    continue
 
-            ep_returns    = combined["ep"].pct_change().shift(-1)
-            fired_returns = ep_returns.loc[fired_idx].dropna()
-            bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
-            prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
+                ep_returns    = combined["ep"].pct_change().shift(-1)
+                fired_returns = ep_returns.loc[fired_idx].dropna()
+                bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
+                prim_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
 
-            wins      = (fired_returns.values > bil_aligned.values).sum()
-            prim_wins = (fired_returns.values > prim_aligned.values).sum()
-            total     = len(fired_returns)
-            win_rate  = wins / total if total > 0 else 0.0
-            gains     = fired_returns[fired_returns > 0].sum()
-            losses    = abs(fired_returns[fired_returns < 0].sum())
-            pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
-            score     = win_rate * math.log(max(total, 1))
+                wins      = (fired_returns.values > bil_aligned.values).sum()
+                prim_wins = (fired_returns.values > prim_aligned.values).sum()
+                total     = len(fired_returns)
+                win_rate  = wins / total if total > 0 else 0.0
+                gains     = fired_returns[fired_returns > 0].sum()
+                losses    = abs(fired_returns[fired_returns < 0].sum())
+                pf        = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
+                score     = win_rate * math.log(max(total, 1))
 
-            results.append({"period": period, "param": "win_rate",
-                "win_rate": round(win_rate, 4), "total_trades": total,
-                "score": round(score, 4), "profit_factor": round(pf, 4),
-                "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
+                results.append({"period": period_l, "param": period_r,
+                    "win_rate": round(win_rate, 4), "total_trades": total,
+                    "score": round(score, 4), "profit_factor": round(pf, 4),
+                    "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
     elif cat == "CumRet_vs_CumRet":
         base_period_l = lhs.get("window") or 10
         base_period_r = rhs.get("window") or 10

@@ -73,13 +73,13 @@ Each condition dict has these keys:
 | CumRet_fixed | 2D: period × threshold |
 | CumRet_vs_CumRet | 2D: lhs_period × rhs_period |
 | MaxDD_fixed | 2D: period × threshold |
-| MaxDD_vs_MaxDD | 1D currently; target 2D: lhs_period × rhs_period |
+| MaxDD_vs_MaxDD | 2D: lhs_period × rhs_period |
 | Price_vs_MA | 1D: MA window |
 | MA_vs_MA | 2D: short window × long window |
 | Price_vs_EMA | 1D: EMA window |
 | EMA_vs_MA | 2D: EMA window × MA window |
 | EMA_vs_EMA | 2D: lhs_period × rhs_period |
-| MAReturn_fixed / MAReturn_vs_MAReturn | MAReturn now has its own calc; vs-family still 1D currently |
+| MAReturn_fixed / MAReturn_vs_MAReturn | 2D for vs-family; MAReturn has dedicated calc |
 
 ---
 
@@ -162,7 +162,7 @@ python fuzz_tester.py
 
 ## Suggested First Task
 
-Continue 2D sweep expansion for remaining 1D `*_vs_*` families. Next practical target is the drawdown/return comparison branch (`MaxDD_vs_MaxDD`, `MAReturn_vs_MAReturn`, and mixed variants) to move from shared-period 1D to independent-window 2D (`lhs_period × rhs_period`).
+Run a full-strategy regression pass (large Composer exports) and review runtime impact now that all major `*_vs_*` families have 2D sweeps. If runtime is too high, add bounded-grid controls or adaptive sampling.
 
 
 ## This document *may* not be complete, as Claude ran out of tokens and failed to output a succsess message.
