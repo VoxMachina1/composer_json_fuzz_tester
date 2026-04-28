@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import pandas as pd
 from pathlib import Path
@@ -14,7 +15,7 @@ def get_latest_tiingo_date(api_keys):
     Fetches the most recent trading date available on Tiingo using SPY.
     This ensures we sync perfectly with the provider's update schedule.
     """
-    safe_ticker = ticker.replace("/", "-")
+    safe_ticker = "SPY"
     url = f"https://api.tiingo.com/tiingo/daily/{safe_ticker}/prices"
     
     # Check the last 10 days to guarantee we catch the latest trading day
@@ -24,7 +25,7 @@ def get_latest_tiingo_date(api_keys):
         headers = {'Content-Type': 'application/json', 'Authorization': f'Token {key}'}
         params = {'startDate': start_check, 'format': 'json', 'resampleFreq': 'daily'}
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         if response.status_code == 200:
             data = response.json()
             if data:
@@ -38,6 +39,7 @@ def download_ticker_data(ticker, api_keys, data_dir):
     """
     Downloads the FULL historical daily data for a ticker, rotating API keys on failure.
     """
+    safe_ticker = ticker.replace("/", "-")
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     success = False
     data = None
@@ -48,14 +50,24 @@ def download_ticker_data(ticker, api_keys, data_dir):
         params = {'startDate': '1900-01-01', 'format': 'json', 'resampleFreq': 'daily'}
         
         print(f"[{ticker}] Downloading full history using key ending in ...{key[-4:]}")
-        response = requests.get(url, headers=headers, params=params)
+        retries = 5
+        backoff_s = 1.0
+        response = None
+        for _ in range(retries):
+            response = requests.get(url, headers=headers, params=params, timeout=45)
+            if response.status_code != 429:
+                break
+            print(f"[{ticker}] 429 rate limit hit. Retrying in {backoff_s:.1f}s...")
+            time.sleep(backoff_s)
+            backoff_s = min(backoff_s * 2, 16.0)
         
-        if response.status_code == 200:
+        if response is not None and response.status_code == 200:
             data = response.json()
             success = True
             break
         else:
-            print(f"[{ticker}] Key failed. Status: {response.status_code}. Rotating...")
+            status = response.status_code if response is not None else "no-response"
+            print(f"[{ticker}] Key failed. Status: {status}. Rotating...")
             continue
             
     if not success or not data:
@@ -99,6 +111,8 @@ def check_freshness_and_update(tickers, api_keys, data_dir):
             
         if needs_rebuild:
             download_ticker_data(ticker, api_keys, data_dir)
+            # Free-tier Tiingo is rate-limited; small delay helps avoid 429s.
+            time.sleep(0.4)
 
 # --- TEST ---
 if __name__ == "__main__":
