@@ -1,10 +1,13 @@
+# You ever wonder how robust any given check in one of your strategies is?
+https://github.com/VoxMachina1/composer_json_fuzz_tester
+
 # Composer JSON Fuzz Tester
 
-A robustness testing tool for [Composer](https://www.composer.trade) / VOXPORT strategy JSON files.
+A robustness testing tool for [Composer](https://www.composer.trade) strategy JSON files.
 
-Extracts every IF condition from your strategy, runs a 2D parameter sweep across each one (period × threshold), and measures how consistently each condition performs when its parameters are nudged. The output is a single self-contained HTML report with interactive heatmaps, a fragility-ranked sidebar, and a per-cell stat panel.
+Extracts every IF condition from your strategy, runs a 2D parameter sweep across each one (period × threshold), and measures how consistently each condition performs when its parameters are nudged/fuzzed. The output is a single self-contained HTML report with interactive heatmaps, a fragility-ranked sidebar, and a per-cell stat panel.
 
-The goal is to separate robust edges from overfit noise — a condition that only works at one specific RSI threshold is fragile; one that works across a wide range is worth trusting.
+The goal is to separate robust edges from overfit noise — a condition that only works at one specific RSI threshold is fragile; one that works across a wide range is worth investigating.
 
 ---
 
