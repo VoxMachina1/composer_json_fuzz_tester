@@ -618,10 +618,9 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 })
 
     # --- MA / Price cross (Price > MA) ---
-    elif cat in ("Price_vs_MA", "MA_fixed", "Price_fixed"):
-        # Fuzz the MA window
-        ticker = lhs["ticker"]
-        # For price > MA, the MA window is on the rhs
+    elif cat in ("Price_vs_MA", "MA_fixed", "Price_fixed", "Price_vs_MAReturn"):
+        # Fuzz the indicator window on the rhs side (MA / MAReturn variants)
+        rhs_fn_label = rhs.get("fn_label", "MA") if rhs["type"] == "indicator" else "MA"
         rhs_ticker = rhs.get("ticker", lhs["ticker"]) if rhs["type"] == "indicator" else lhs["ticker"]
         base_window = rhs.get("window") or lhs.get("window") or 200
         fuzz_r = fuzz.get("MA", 0.3)
@@ -630,6 +629,10 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
 
         try:
             price_series = load_price_series(lhs["ticker"])
+        except FileNotFoundError as e:
+            return None, str(e)
+        try:
+            rhs_price_series = load_price_series(rhs_ticker)
         except FileNotFoundError as e:
             return None, str(e)
 
@@ -642,18 +645,18 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         windows = range(win_lo, win_hi + 1, max(1, config["period_step"]))
 
         for window in windows:
-            ma_vals = calculate_sma(price_series, window)
-            combined = pd.DataFrame({"price": price_series, "ma": ma_vals, "ep": ep_price}).dropna()
+            rhs_vals = compute_indicator(rhs_price_series, rhs_fn_label, window)
+            combined = pd.DataFrame({"price": price_series, "rhs_metric": rhs_vals, "ep": ep_price}).dropna()
             combined = combined[(combined.index >= start) & (combined.index <= end)]
             if len(combined) < 20:
                 continue
 
             if comp == "gt":
-                fired = combined["price"] > combined["ma"]
+                fired = combined["price"] > combined["rhs_metric"]
             elif comp == "lt":
-                fired = combined["price"] < combined["ma"]
+                fired = combined["price"] < combined["rhs_metric"]
             else:
-                fired = combined["price"] > combined["ma"]
+                fired = combined["price"] > combined["rhs_metric"]
 
             fired_idx = combined.index[fired]
             if len(fired_idx) < 2:
