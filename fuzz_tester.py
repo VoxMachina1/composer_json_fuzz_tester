@@ -39,14 +39,24 @@ DATA_DIR = SCRIPT_DIR / "strategy_engine" / "data"
 
 
 def calculate_maxdd(series, period):
-    """Rolling max drawdown over `period` days (returns positive %, e.g. 15.0 = 15% DD)."""
+    """Rolling strict peak-to-trough max drawdown over `period` days (positive %)."""
     def _maxdd(window):
-        peak = window.max()
-        if peak <= 0:
+        arr = np.asarray(window, dtype=float)
+        if arr.size == 0:
             return 0.0
-        trough = window.min()
-        return ((peak - trough) / peak) * 100
+        running_peaks = np.maximum.accumulate(arr)
+        valid = running_peaks > 0
+        if not valid.any():
+            return 0.0
+        drawdowns = np.zeros_like(arr, dtype=float)
+        drawdowns[valid] = (running_peaks[valid] - arr[valid]) / running_peaks[valid]
+        return float(drawdowns.max() * 100.0)
     return series.rolling(window=period).apply(_maxdd, raw=True)
+
+
+def calculate_mareturn(series, period):
+    """Rolling mean of daily returns over `period` days (decimal return)."""
+    return series.pct_change().rolling(window=period).mean()
 
 # ---------------------------------------------------------------------------
 # Strategy JSON condition extractor
@@ -89,6 +99,70 @@ def _parse_side(node, prefix):
     fn_label = FN_LABELS.get(fn_raw, fn_raw)
     return {"type": "indicator", "fn_raw": fn_raw, "fn_label": fn_label,
             "ticker": ticker, "window": int(window) if window is not None else None}
+
+
+def _parse_side_from_condition_spec(side_spec, ticker_override=None):
+    """Parses condition side from Composer condition payload format."""
+    if not isinstance(side_spec, dict):
+        return {"type": "indicator", "fn_raw": "", "fn_label": "", "ticker": "?", "window": None}
+    if "constant" in side_spec:
+        return {"type": "fixed", "value": float(side_spec.get("constant", 0))}
+    fn_raw = side_spec.get("fn", "")
+    params = side_spec.get("params", {}) or {}
+    window = params.get("window")
+    ticker = side_spec.get("ticker", ticker_override if ticker_override else "?")
+    if ticker == "%":
+        ticker = ticker_override if ticker_override else "?"
+    fn_label = FN_LABELS.get(fn_raw, fn_raw)
+    return {"type": "indicator", "fn_raw": fn_raw, "fn_label": fn_label,
+            "ticker": ticker, "window": int(window) if window is not None else None}
+
+
+def _extract_atomic_conditions(if_child):
+    """
+    Returns list of atomic conditions normalized as:
+      {"lhs": dict, "rhs": dict, "comparator": str}
+    Supports direct if-child shape plus condition payload shapes:
+      compound, binary-compound, binary.
+    """
+    comparator = if_child.get("comparator")
+    has_direct_shape = if_child.get("lhs-fn") and comparator
+    if has_direct_shape:
+        return [{
+            "lhs": _parse_side(if_child, "lhs"),
+            "rhs": _parse_side(if_child, "rhs"),
+            "comparator": comparator,
+        }]
+
+    payload = if_child.get("condition")
+    if not isinstance(payload, dict):
+        return []
+
+    out = []
+
+    def _walk(cond_payload, inherited_ticker=None):
+        ctype = cond_payload.get("condition-type")
+        if ctype == "compound":
+            for inner in cond_payload.get("conditions", []):
+                _walk(inner, inherited_ticker=inherited_ticker)
+            return
+
+        if ctype in ("binary-compound", "binary"):
+            comp = cond_payload.get("comparator")
+            lhs_spec = cond_payload.get("lhs", {}) or {}
+            rhs_spec = cond_payload.get("rhs", {}) or {}
+            tickers = cond_payload.get("tickers") or []
+            if not tickers:
+                tickers = [inherited_ticker] if inherited_ticker else [None]
+
+            for t in tickers:
+                lhs = _parse_side_from_condition_spec(lhs_spec, ticker_override=t)
+                rhs = _parse_side_from_condition_spec(rhs_spec, ticker_override=t)
+                out.append({"lhs": lhs, "rhs": rhs, "comparator": comp})
+            return
+
+    _walk(payload)
+    return [x for x in out if x.get("comparator")]
 
 
 def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strategy=None, results=None):
@@ -165,10 +239,9 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
         else_branches     = [c for c in if_children if     c.get("is-else-condition?")]
 
         for pos in positive_branches:
-            lhs = _parse_side(pos, "lhs")
-            rhs = _parse_side(pos, "rhs")
-            comparator = pos.get("comparator", "?")
-            comp_label = COMPARATOR_LABELS.get(comparator, "?")
+            atomic_conditions = _extract_atomic_conditions(pos)
+            if not atomic_conditions:
+                continue
 
             # Build human-readable label
             def side_label(s):
@@ -177,36 +250,39 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
                 w = s["window"]
                 return f"{s['fn_label']}({s['ticker']}, {w})" if w else f"{s['fn_label']}({s['ticker']})"
 
-            human = f"{side_label(lhs)} {comp_label} {side_label(rhs)}"
+            for atom in atomic_conditions:
+                lhs = atom["lhs"]
+                rhs = atom["rhs"]
+                comparator = atom.get("comparator", "?")
+                comp_label = COMPARATOR_LABELS.get(comparator, "?")
+                human = f"{side_label(lhs)} {comp_label} {side_label(rhs)}"
+                category = _categorize_condition(lhs, rhs)
 
-            # Determine condition category for fuzzing
-            category = _categorize_condition(lhs, rhs)
+                results.append({
+                    "id":           len(results),
+                    "sub_strategy": sub_strategy or "(root)",
+                    "depth":        depth,
+                    "human":        human,
+                    "comparator":   comparator,
+                    "comp_label":   comp_label,
+                    "lhs":          lhs,
+                    "rhs":          rhs,
+                    "category":     category,
+                    "path_so_far":  list(path_conditions),
+                    "children_endpoints": _collect_endpoints(pos),
+                })
 
-            results.append({
-                "id":           len(results),
-                "sub_strategy": sub_strategy or "(root)",
-                "depth":        depth,
-                "human":        human,
-                "comparator":   comparator,
-                "comp_label":   comp_label,
-                "lhs":          lhs,
-                "rhs":          rhs,
-                "category":     category,
-                "path_so_far":  list(path_conditions),
-                "children_endpoints": _collect_endpoints(pos),
-            })
+                new_path = path_conditions + [human]
+                for grandchild in pos.get("children", []):
+                    extract_conditions_from_tree(grandchild, depth + 1, new_path, sub_strategy, results)
 
-            new_path = path_conditions + [human]
-            for grandchild in pos.get("children", []):
-                extract_conditions_from_tree(grandchild, depth + 1, new_path, sub_strategy, results)
-
-            if else_branches:
-                neg_label = COMPARATOR_NEGATIONS.get(comparator, "?")
-                neg_human = f"{side_label(lhs)} {neg_label} {side_label(rhs)}"
-                new_path_neg = path_conditions + [neg_human]
-                for els in else_branches:
-                    for grandchild in els.get("children", []):
-                        extract_conditions_from_tree(grandchild, depth + 1, new_path_neg, sub_strategy, results)
+                if else_branches:
+                    neg_label = COMPARATOR_NEGATIONS.get(comparator, "?")
+                    neg_human = f"{side_label(lhs)} {neg_label} {side_label(rhs)}"
+                    new_path_neg = path_conditions + [neg_human]
+                    for els in else_branches:
+                        for grandchild in els.get("children", []):
+                            extract_conditions_from_tree(grandchild, depth + 1, new_path_neg, sub_strategy, results)
 
     if step == "if-child":
         for child in node.get("children", []):
@@ -224,9 +300,6 @@ def _categorize_condition(lhs, rhs):
         return f"{fn}_fixed"
     elif rhs["type"] == "indicator":
         rhs_fn = rhs["fn_label"]
-        # Normalise MaxDD vs MAReturn — both are drawdown-family comparisons
-        if fn in ("MaxDD", "MAReturn") and rhs_fn in ("MaxDD", "MAReturn"):
-            return "MaxDD_vs_MaxDD"
         # Price vs EMA cross
         if fn == "Price" and rhs_fn == "EMA":
             return "Price_vs_EMA"
@@ -333,8 +406,10 @@ def compute_indicator(series, fn_label, period):
         return calculate_ema(series, period)
     elif fn_label == "CumRet":
         return calculate_cumret(series, period)
-    elif fn_label in ("MaxDD", "MAReturn"):
+    elif fn_label == "MaxDD":
         return calculate_maxdd(series, period)
+    elif fn_label == "MAReturn":
+        return calculate_mareturn(series, period)
     else:
         return series  # Price fallback
 
@@ -469,10 +544,13 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
 
     # --- RSI vs RSI (relative strength) ---
     elif cat == "RSI_vs_RSI":
-        base_period = lhs["window"]
+        base_period_l = lhs.get("window") or 10
+        base_period_r = rhs.get("window") or 10
         fuzz_r      = fuzz.get("RSI", 0.1)
-        period_lo   = max(2, round(base_period * (1 - fuzz_r)))
-        period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        period_l_lo = max(2, round(base_period_l * (1 - fuzz_r)))
+        period_l_hi = max(3, round(base_period_l * (1 + fuzz_r)))
+        period_r_lo = max(2, round(base_period_r * (1 - fuzz_r)))
+        period_r_hi = max(3, round(base_period_r * (1 + fuzz_r)))
 
         ticker_l = lhs["ticker"]
         ticker_r = rhs["ticker"]
@@ -489,54 +567,55 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
             return None, f"No data for endpoint {endpoint}"
 
         comp = cond["comparator"]
-        # For RSI vs RSI, only 1D sweep over period (no threshold axis — use period for both axes display)
-        periods = range(period_lo, period_hi + 1, config["period_step"])
+        periods_l = range(period_l_lo, period_l_hi + 1, config["period_step"])
+        periods_r = range(period_r_lo, period_r_hi + 1, config["period_step"])
 
-        for period in periods:
-            rsi_l = calculate_rsi(price_l, period)
-            rsi_r = calculate_rsi(price_r, period)
-            combined = pd.DataFrame({"rsi_l": rsi_l, "rsi_r": rsi_r, "ep": ep_price}).dropna()
-            combined = combined[(combined.index >= start) & (combined.index <= end)]
-            if len(combined) < 20:
-                continue
+        for period_l in periods_l:
+            rsi_l = calculate_rsi(price_l, period_l)
+            for period_r in periods_r:
+                rsi_r = calculate_rsi(price_r, period_r)
+                combined = pd.DataFrame({"rsi_l": rsi_l, "rsi_r": rsi_r, "ep": ep_price}).dropna()
+                combined = combined[(combined.index >= start) & (combined.index <= end)]
+                if len(combined) < 20:
+                    continue
 
-            if comp == "gt":
-                fired = combined["rsi_l"] > combined["rsi_r"]
-            elif comp == "lt":
-                fired = combined["rsi_l"] < combined["rsi_r"]
-            else:
-                fired = combined["rsi_l"] > combined["rsi_r"]
+                if comp == "gt":
+                    fired = combined["rsi_l"] > combined["rsi_r"]
+                elif comp == "lt":
+                    fired = combined["rsi_l"] < combined["rsi_r"]
+                else:
+                    fired = combined["rsi_l"] > combined["rsi_r"]
 
-            fired_idx = combined.index[fired]
-            if len(fired_idx) < 2:
-                continue
+                fired_idx = combined.index[fired]
+                if len(fired_idx) < 2:
+                    continue
 
-            ep_returns    = combined["ep"].pct_change().shift(-1)
-            fired_returns = ep_returns.loc[fired_idx].dropna()
-            bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
+                ep_returns    = combined["ep"].pct_change().shift(-1)
+                fired_returns = ep_returns.loc[fired_idx].dropna()
+                bil_aligned   = bil_returns.reindex(fired_returns.index, fill_value=0)
 
-            wins      = (fired_returns.values > bil_aligned.values).sum()
-            total     = len(fired_returns)
-            win_rate  = wins / total if total > 0 else 0.0
-            score     = win_rate * math.log(max(total, 1))
+                wins      = (fired_returns.values > bil_aligned.values).sum()
+                total     = len(fired_returns)
+                win_rate  = wins / total if total > 0 else 0.0
+                score     = win_rate * math.log(max(total, 1))
 
-            gross_profit = fired_returns[fired_returns > 0].sum()
-            gross_loss   = abs(fired_returns[fired_returns < 0].sum())
-            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-            profit_factor = round(min(profit_factor, 99.0), 4)
+                gross_profit = fired_returns[fired_returns > 0].sum()
+                gross_loss   = abs(fired_returns[fired_returns < 0].sum())
+                profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+                profit_factor = round(min(profit_factor, 99.0), 4)
 
-            pri_aligned2 = primary_returns.reindex(fired_returns.index, fill_value=0)
-            primary_beat_rate = (fired_returns.values > pri_aligned2.values).sum() / total if total > 0 else 0.0
+                pri_aligned2 = primary_returns.reindex(fired_returns.index, fill_value=0)
+                primary_beat_rate = (fired_returns.values > pri_aligned2.values).sum() / total if total > 0 else 0.0
 
-            results.append({
-                "period":             period,
-                "param":              "win_rate",
-                "win_rate":           round(win_rate, 4),
-                "total_trades":       total,
-                "score":              round(score, 4),
-                "profit_factor":      profit_factor,
-                "primary_beat_rate":  round(primary_beat_rate, 4),
-            })
+                results.append({
+                    "period":             period_l,
+                    "param":              period_r,
+                    "win_rate":           round(win_rate, 4),
+                    "total_trades":       total,
+                    "score":              round(score, 4),
+                    "profit_factor":      profit_factor,
+                    "primary_beat_rate":  round(primary_beat_rate, 4),
+                })
 
     # --- MA / Price cross (Price > MA) ---
     elif cat in ("Price_vs_MA", "MA_fixed", "Price_fixed"):
@@ -848,10 +927,11 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
     # ---- MaxDD vs fixed threshold ----
-    elif cat == "MaxDD_fixed":
+    elif cat in ("MaxDD_fixed", "MAReturn_fixed"):
         base_period    = lhs["window"]
         base_threshold = rhs["value"]
         fuzz_r         = fuzz.get("MaxDD", 0.2)
+        lhs_fn         = lhs["fn_label"]
 
         period_lo = max(2, round(base_period    * (1 - fuzz_r)))
         period_hi = max(3, round(base_period    * (1 + fuzz_r)))
@@ -877,15 +957,15 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         periods    = range(period_lo, period_hi + 1, config["period_step"])
 
         for period in periods:
-            dd_vals = calculate_maxdd(price, period)
+            metric_vals = compute_indicator(price, lhs_fn, period)
             for thresh in thresholds:
-                combined = pd.DataFrame({"dd": dd_vals, "ep": ep_price}).dropna()
+                combined = pd.DataFrame({"metric": metric_vals, "ep": ep_price}).dropna()
                 combined = combined[(combined.index >= start) & (combined.index <= end)]
                 if len(combined) < 20:
                     continue
-                if comp == "gt":   fired = combined["dd"] > thresh
-                elif comp == "lt": fired = combined["dd"] < thresh
-                else:              fired = combined["dd"] > thresh
+                if comp == "gt":   fired = combined["metric"] > thresh
+                elif comp == "lt": fired = combined["metric"] < thresh
+                else:              fired = combined["metric"] > thresh
 
                 fired_idx = combined.index[fired]
                 if len(fired_idx) < 2:
@@ -911,11 +991,13 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                     "primary_beat_rate": round(prim_wins / total if total > 0 else 0, 4)})
 
     # ---- MaxDD vs MaxDD (sort by drawdown — 1D window sweep) ----
-    elif cat in ("MaxDD_vs_MaxDD", "MAReturn_vs_MAReturn"):
+    elif cat in ("MaxDD_vs_MaxDD", "MAReturn_vs_MAReturn", "MaxDD_vs_MAReturn", "MAReturn_vs_MaxDD"):
         base_period = lhs["window"]
         fuzz_r      = fuzz.get("MaxDD", 0.2)
         period_lo   = max(2, round(base_period * (1 - fuzz_r)))
         period_hi   = max(3, round(base_period * (1 + fuzz_r)))
+        lhs_fn      = lhs["fn_label"]
+        rhs_fn      = rhs["fn_label"]
 
         ticker_l = lhs["ticker"]
         ticker_r = rhs["ticker"]
@@ -934,16 +1016,16 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         periods = range(period_lo, period_hi + 1, config["period_step"])
 
         for period in periods:
-            dd_l = calculate_maxdd(price_l, period)
-            dd_r = calculate_maxdd(price_r, period)
-            combined = pd.DataFrame({"dd_l": dd_l, "dd_r": dd_r, "ep": ep_price}).dropna()
+            metric_l = compute_indicator(price_l, lhs_fn, period)
+            metric_r = compute_indicator(price_r, rhs_fn, period)
+            combined = pd.DataFrame({"metric_l": metric_l, "metric_r": metric_r, "ep": ep_price}).dropna()
             combined = combined[(combined.index >= start) & (combined.index <= end)]
             if len(combined) < 20:
                 continue
 
-            if comp == "gt":   fired = combined["dd_l"] > combined["dd_r"]
-            elif comp == "lt": fired = combined["dd_l"] < combined["dd_r"]
-            else:              fired = combined["dd_l"] < combined["dd_r"]
+            if comp == "gt":   fired = combined["metric_l"] > combined["metric_r"]
+            elif comp == "lt": fired = combined["metric_l"] < combined["metric_r"]
+            else:              fired = combined["metric_l"] < combined["metric_r"]
 
             fired_idx = combined.index[fired]
             if len(fired_idx) < 2:
