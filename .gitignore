@@ -22,3 +22,6 @@ pathfinder/tree.txt**/.~lock.*
 # Misc paste ins
 strategy_filter/filtered.csv
 strategy_filter/filter_summary.txt
+
+# Ignore all HTML in root
+/*.HTML
