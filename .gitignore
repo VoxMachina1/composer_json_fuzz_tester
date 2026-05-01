@@ -25,3 +25,7 @@ strategy_filter/filter_summary.txt
 
 # Ignore all HTML in root
 /*.HTML
+
+# Personal Documentation
+HANDOFF.md
+ORIENTATION_NOTES.md
