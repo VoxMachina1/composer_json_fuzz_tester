@@ -701,7 +701,152 @@ def df_to_heatmap_data(df, cond):
     }
 
 
-def generate_html(conditions, sweep_results, fragility_scores, config):
+# ---------------------------------------------------------------------------
+# Signal data builder (for JS-side equity curve + signal overlay charts)
+# ---------------------------------------------------------------------------
+
+def build_signal_data(conditions, config):
+    """
+    Builds pre-computed signal data for browser-side rendering.
+    Returns a dict with:
+      dates:   list of date strings (unified spine)
+      prices:  dict ticker -> list of close prices aligned to dates (forward-filled)
+      signals: dict "condId:alloc" -> {
+        price:     [price, ...] (endpoint price, forward-filled),
+        lhs_vals:  [val, ...] (lhs indicator at base params),
+        signal:    [bool, ...] (pre-computed signal mask),
+        strat_curve:  [float, ...] (strategy cumret, 100-based),
+        asset_curve:  [float, ...] (buy-hold cumret, 100-based),
+        bil_curve:    [float, ...] (BIL cumret, 100-based),
+        label: str (human-readable condition label)
+      }
+    """
+    import pandas as pd
+    import numpy as np
+
+    start = config["start_date"]
+    end = config["end_date"]
+
+    all_tickers = set()
+    for cond in conditions:
+        lhs = cond["lhs"]
+        rhs = cond["rhs"]
+        if lhs.get("ticker"):
+            all_tickers.add(lhs["ticker"].upper())
+        if rhs.get("type") == "indicator" and rhs.get("ticker"):
+            all_tickers.add(rhs["ticker"].upper())
+        for ep in cond.get("children_endpoints", []):
+            all_tickers.add(ep.upper())
+    all_tickers.add("BIL")
+
+    price_series = {}
+    for t in sorted(all_tickers):
+        try:
+            price_series[t] = load_price_series(t)
+        except (FileNotFoundError, Exception):
+            continue
+
+    date_set = set()
+    for t, s in price_series.items():
+        s_filt = s[(s.index >= start) & (s.index <= end)]
+        for dt in s_filt.index:
+            date_set.add(dt)
+    global_dates = sorted(date_set)
+    global_dates_str = [d.strftime("%Y-%m-%d") for d in global_dates]
+    dt_index = pd.DatetimeIndex(global_dates)
+
+    prices_fwd = {}
+    for t, s in price_series.items():
+        s_filt = s[(s.index >= start) & (s.index <= end)]
+        s_aligned = s_filt.reindex(dt_index).ffill()
+        prices_fwd[t] = [round(float(v), 4) if pd.notna(v) else None for v in s_aligned.values]
+
+    signals = {}
+    for cond in conditions:
+        allocs = cond.get("children_endpoints") or [None]
+        lhs = cond["lhs"]
+        rhs = cond["rhs"]
+        comp = cond.get("comparator", "gt")
+
+        for alloc in allocs:
+            key = f"{cond['id']}:{alloc if alloc is not None else '(none)'}"
+            ep_ticker = (alloc or "").upper()
+            lhs_ticker = (lhs.get("ticker") or "").upper()
+
+            price_l = prices_fwd.get(lhs_ticker, [None] * len(global_dates))
+            price_ep = prices_fwd.get(ep_ticker, [None] * len(global_dates))
+            price_bil = prices_fwd.get("BIL", [None] * len(global_dates))
+
+            ep_series = pd.Series(price_ep, dtype=float)
+            bil_series = pd.Series(price_bil, dtype=float)
+            ep_ret = ep_series.pct_change().fillna(0).values
+            bil_ret = bil_series.pct_change().fillna(0).values
+
+            lhs_series = pd.Series(price_l, dtype=float)
+            lhs_window = lhs.get("window")
+            if lhs_window and lhs["fn_label"]:
+                try:
+                    metric = compute_indicator(lhs_series, lhs["fn_label"], int(lhs_window))
+                except Exception:
+                    metric = pd.Series([np.nan] * len(global_dates))
+            else:
+                metric = ep_series
+
+            if rhs["type"] == "fixed":
+                rhs_val = float(rhs.get("value", 0))
+                fired = _apply_comparator(comp, metric, rhs_val)
+            else:
+                rhs_ticker = (rhs.get("ticker") or "").upper()
+                price_r = prices_fwd.get(rhs_ticker, [None] * len(global_dates))
+                rhs_series = pd.Series(price_r, dtype=float)
+                rhs_window = rhs.get("window")
+                if rhs_window and rhs["fn_label"]:
+                    try:
+                        rhs_metric = compute_indicator(rhs_series, rhs["fn_label"], int(rhs_window))
+                    except Exception:
+                        rhs_metric = pd.Series([np.nan] * len(global_dates))
+                else:
+                    rhs_metric = rhs_series
+                fired = _apply_comparator(comp, metric, rhs_metric)
+
+            signal_arr = fired.astype(bool).values.tolist()
+            lhs_vals_arr = [round(float(v), 4) if pd.notna(v) else None for v in metric.values]
+
+            strat = 100.0
+            asset = 100.0
+            bil_c = 100.0
+            strat_curve = [100.0]
+            asset_curve = [100.0]
+            bil_curve = [100.0]
+            for i in range(1, len(global_dates)):
+                sr = ep_ret[i] if signal_arr[i] else bil_ret[i]
+                strat *= (1 + sr)
+                asset *= (1 + ep_ret[i])
+                bil_c *= (1 + bil_ret[i])
+                strat_curve.append(round(strat, 6))
+                asset_curve.append(round(asset, 6))
+                bil_curve.append(round(bil_c, 6))
+
+            lhs_label = f"{lhs['fn_label']}({lhs_ticker}, {lhs_window})" if lhs_window else f"{lhs['fn_label']}({lhs_ticker})"
+            signals[key] = {
+                "price": [round(float(v), 4) if pd.notna(v) else None for v in ep_series.values],
+                "lhs_vals": lhs_vals_arr,
+                "signal": signal_arr,
+                "strat_curve": strat_curve,
+                "asset_curve": asset_curve,
+                "bil_curve": bil_curve,
+                "label": lhs_label,
+                "human": cond.get("human", ""),
+            }
+
+    return {
+        "dates": global_dates_str,
+        "prices": prices_fwd,
+        "signals": signals,
+    }
+
+
+def generate_html(conditions, sweep_results, fragility_scores, config, signal_data=None):
     """Generate the full HTML report by injecting data into the external template."""
     import json as jsonmod
 
@@ -758,6 +903,13 @@ def generate_html(conditions, sweep_results, fragility_scores, config):
     html = html.replace("__HEATMAP_JSON__", heatmap_json)
     html = html.replace("__FRAGILITY_JSON__", fragility_json)
     html = html.replace("__CONDITIONS_JSON__", conditions_json)
+
+    # Inject signal data for JS-side equity curve + signal overlay charts
+    if signal_data is not None:
+        signal_json = jsonmod.dumps(signal_data)
+    else:
+        signal_json = jsonmod.dumps({"dates": [], "prices": {}, "returns": {}, "signals": {}})
+    html = html.replace("__SIGNAL_DATA__", signal_json)
 
     return html
 
@@ -839,9 +991,13 @@ def main():
 
         fragility_scores[cond["id"]] = worst_fragility if allocs != [None] else 1.0
 
+    # Build signal data for JS-side charts
+    print("  Building signal data...")
+    signal_data = build_signal_data(conditions, config)
+
     # Generate HTML
     print("\n  Generating HTML report...")
-    html = generate_html(conditions, sweep_results, fragility_scores, config)
+    html = generate_html(conditions, sweep_results, fragility_scores, config, signal_data=signal_data)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_stem = Path(config["json_path"]).stem
