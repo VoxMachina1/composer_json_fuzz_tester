@@ -141,7 +141,7 @@ Hover any cell to preview its stats. Click to pin it (blue border). Click a seco
 | Profit Factor | Gross gains ÷ gross losses on signal days. >1.5 is solid |
 | Trades (n) | Days the condition fired. Low n = unreliable win rate |
 | Score | Win Rate × log(n) — penalises high win rates from tiny samples |
-| vs [primary] | % of signal days where the allocated asset beat your primary asset |
+| vs [asset] | % of signal days where the allocated asset beat the selected comparison asset (changeable via dropdown in report) |
 
 When two cells are pinned, a Δ row shows the difference between them.
 
@@ -198,24 +198,22 @@ Price data is downloaded from Tiingo on first run and cached as CSVs in `strateg
 ```
 composer_json_fuzz_tester/
 ├── fuzz_tester.py              # Main script — run this
+├── report_template.html        # HTML report template (__VAR__ string replacement)
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
 │
 ├── pathfinder/
-│   ├── strategy.json           # Your strategy export (gitignored, add your own)
-│   └── strategy_paths.py       # Strategy tree walker (shared utility)
+│   └── strategy.json           # Your strategy export (gitignored, add your own)
 │
 └── strategy_engine/
     ├── .env                    # Your API keys (gitignored, create from .env.example)
     ├── .env.example            # Key format reference
-    ├── config/
-    │   └── template.yaml       # Engine config
     ├── data/                   # Downloaded price CSVs (gitignored, auto-generated)
     └── src/
         ├── config_loader.py    # Loads .env and config
         ├── data_loader.py      # Tiingo download + freshness checks
-        ├── data_alignment.py   # Multi-asset DataFrame builder
+        ├── data_alignment.py   # Single ticker CSV loader
         └── indicators.py       # RSI, SMA, EMA, CumRet implementations
 ```
 
@@ -225,5 +223,5 @@ composer_json_fuzz_tester/
 
 - The HTML report is fully self-contained — share it with anyone, no dependencies required to view it.
 - Conditions with fewer than 20 matching days in the backtest window are skipped and shown as errors in the report. This is expected for very restrictive conditions or short date ranges.
-- `pathfinder/*.json` is gitignored — add your own strategy file, it won't be tracked.
+- `pathfinder/strategy.json` is gitignored — add your own strategy file there, it won't be tracked. Sample files (`any_all_example.json`, `bestsignals3.json`) are intentionally tracked for validation.
 - Price data in `strategy_engine/data/` is gitignored. Teammates download their own copy on first run.
