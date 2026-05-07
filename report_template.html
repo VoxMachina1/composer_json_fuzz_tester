@@ -131,6 +131,19 @@
   .welcome-icon{font-size:36px;margin-bottom:14px;opacity:.3;}
   .welcome-title{font-family:var(--font-mono);font-size:14px;color:var(--text);margin-bottom:6px;}
   .welcome-sub{font-size:12px;}
+
+  /* Config bar */
+  .config-bar{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;margin-bottom:18px;font-family:var(--font-mono);font-size:10px;}
+  .config-label{color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
+  .config-select{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:3px 7px;font-family:var(--font-mono);font-size:10px;cursor:pointer;}
+  .config-select:focus{outline:none;border-color:var(--accent);}
+
+  /* Signal / equity chart extras */
+  .chart-legend{display:flex;gap:14px;margin-top:6px;font-family:var(--font-mono);font-size:9px;color:var(--muted);flex-wrap:wrap;}
+  .chart-legend-item{display:flex;align-items:center;gap:4px;}
+  .chart-legend-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+  .signal-none{background:rgba(231,76,60,.12);border:1px solid rgba(231,76,60,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--red);margin-bottom:10px;}
+  .signal-low{background:rgba(241,196,15,.12);border:1px solid rgba(241,196,15,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--yellow);margin-bottom:10px;}
 </style>
 </head>
 <body>
@@ -140,7 +153,7 @@
     <div class="sidebar-header">
       <div class="sidebar-title">Fuzz Report</div>
       <div class="sidebar-file">__JSON_NAME__</div>
-      <div class="sidebar-meta">__TIMESTAMP__ · __COND_COUNT__ conditions · primary: __PRIMARY_ASSET__</div>
+      <div class="sidebar-meta">__TIMESTAMP__ · __COND_COUNT__ conditions</div>
     </div>
     <div class="sidebar-body" id="logic-tree"></div>
     <div class="sidebar-help">
@@ -154,6 +167,10 @@
     <div class="page-header">
       <div class="page-title">Parameter Robustness</div>
       <div class="page-subtitle">Win rate &amp; profit factor across ±fuzz sweep · click cell to pin · click second to compare</div>
+    </div>
+    <div class="config-bar">
+      <span class="config-label">vs</span>
+      <select class="config-select" id="comparison-select"></select>
     </div>
     <div class="compare-bar hidden" id="compare-bar">
       <div class="compare-slot" id="slot-a"><span style="color:#4f8ef7;margin-right:4px">▪</span><span id="slot-a-label">Pin a cell</span></div>
@@ -196,7 +213,7 @@
     <div class="metric"><div class="metric-name">Profit Factor</div><div class="metric-desc">Sum of gains ÷ sum of losses on signal days. >1.0 means the wins outweigh the losses in dollar terms. >1.5 is solid.</div></div>
     <div class="metric"><div class="metric-name">Trades (n)</div><div class="metric-desc">How many days the condition fired. Low n (under ~20) means the win rate is unreliable — small samples swing wildly.</div></div>
     <div class="metric"><div class="metric-name">Score</div><div class="metric-desc">Win Rate × log(n). Penalises high win rates that come from tiny samples. Useful for ranking conditions against each other.</div></div>
-    <div class="metric"><div class="metric-name">vs __PRIMARY_ASSET__</div><div class="metric-desc">% of signal days where the allocated asset beat __PRIMARY_ASSET__ (your primary asset). Relevant when the condition is supposed to be an improvement over just holding __PRIMARY_ASSET__.</div></div>
+    <div class="metric"><div class="metric-name">vs [asset]</div><div class="metric-desc">% of signal days where the allocated asset beat the selected comparison asset. Change the asset via the "vs" dropdown at the top of the report. Relevant when the condition is supposed to be an improvement over just holding a benchmark.</div></div>
 
     <h3>Fragility score (sidebar colours)</h3>
     <div class="metric"><div class="metric-name" style="color:#2ecc71">Robust</div><div class="metric-desc">Win rate is very consistent across the sweep. High confidence the condition is real.</div></div>
@@ -211,11 +228,14 @@
 </div>
 
 <script>
-const HEATMAP_DATA   = __HEATMAP_JSON__;
-const FRAGILITY      = __FRAGILITY_JSON__;
-const CONDITIONS     = __CONDITIONS_JSON__;
-const PRIMARY_ASSET  = "__PRIMARY_ASSET__";
+const HEATMAP_DATA     = __HEATMAP_JSON__;
+const FRAGILITY        = __FRAGILITY_JSON__;
+const CONDITIONS       = __CONDITIONS_JSON__;
+const PRIMARY_ASSET    = "__PRIMARY_ASSET__";
+const AVAILABLE_ASSETS = __AVAILABLE_ASSETS__;
+const SIGNAL_DATA      = __SIGNAL_DATA__;
 
+let selectedAsset = PRIMARY_ASSET;
 let pinnedA = null, pinnedB = null, hoveredCell = null;
 let currentCondId = null, currentAlloc = null;
 
@@ -240,6 +260,7 @@ function fragLabel(s) {
 }
 function pct(v){return(v*100).toFixed(1)+'%';}
 function f2(v){return(v==null||v===undefined)?'—':v.toFixed(2);}
+function pbVal(cell){return(cell&&cell.pb&&cell.pb[selectedAsset]!=null)?cell.pb[selectedAsset]:0;}
 
 // ── Lazy sidebar tree ───────────────────────────────────────────────────────
 function buildTree() {
@@ -360,11 +381,24 @@ function renderChartsForAlloc(condId, alloc, cond) {
   if(!area) return;
   const key  = condId+':'+(alloc||'(none)');
   const hd   = HEATMAP_DATA[key];
+  const sd   = SIGNAL_DATA && SIGNAL_DATA[key];
 
   if(!hd) {
     const err = cond.alloc_errors&&cond.alloc_errors[alloc] || 'No data available';
     area.innerHTML = `<div class="error-box">⚠ ${alloc}: ${err}</div>`;
     return;
+  }
+
+  // Count signal days for low-data warning
+  let signalCount = 0;
+  if(sd && sd.signal) {
+    for(let i=0;i<sd.signal.length;i++) if(sd.signal[i]) signalCount++;
+  }
+  let warnHtml = '';
+  if(sd && signalCount === 0) {
+    warnHtml = '<div class="signal-none">⚠ Condition never fired — signal charts show BIL baseline only</div>';
+  } else if(sd && signalCount < 20) {
+    warnHtml = `<div class="signal-low">⚠ Only ${signalCount} signal day${signalCount===1?'':'s'} in date range — charts based on very sparse data</div>`;
   }
 
   const is1d = hd.is_1d;
@@ -380,7 +414,22 @@ function renderChartsForAlloc(condId, alloc, cond) {
       <div class="heatmap-wrap"><div id="pf-c"></div>
         ${is1d?'':'<div class="heatmap-legend"><span>Low</span><div class="legend-gradient" style="background:linear-gradient(to right,#e74c3c,#f1c40f,#2ecc71)"></div><span>High</span></div>'}
       </div>
-    </div>`;
+    </div>
+    ${sd ? `
+    ${warnHtml}
+    <div class="chart-section">
+      <div class="section-label">Equity Curves</div>
+      <div class="heatmap-wrap"><div id="eq-c"></div></div>
+    </div>
+    <div class="chart-section">
+      <div class="section-label">Price &amp; Signal Overlay</div>
+      <div class="heatmap-wrap"><div id="so-c-${condId}"></div></div>
+    </div>
+    <div class="chart-section">
+      <div class="section-label">Indicator Values</div>
+      <div class="heatmap-wrap"><div id="ind-c-${condId}"></div></div>
+    </div>
+    ` : ''}`;
 
   if(is1d) {
     renderLine('wr-c', hd, 'wr', wrColor, v=>pct(v));
@@ -388,6 +437,11 @@ function renderChartsForAlloc(condId, alloc, cond) {
   } else {
     renderHeatmap('wr-c', hd, 'wr', condId);
     renderHeatmap('pf-c', hd, 'pf', condId);
+  }
+  if(sd) {
+    renderEquityCurve('eq-c', key, condId);
+    renderSignalOverlay('so-c-'+condId, key);
+    renderIndicatorChart('ind-c-'+condId, key, cond);
   }
 }
 
@@ -407,7 +461,7 @@ function renderInfo() {
       <div class="info-stat"><span class="info-stat-label">Profit Factor</span><span class="info-stat-value" style="color:${pfColor(c.pf)}">${f2(c.pf)}</span></div>
       <div class="info-stat"><span class="info-stat-label">Trades (n)</span><span class="info-stat-value">${c.n}</span></div>
       <div class="info-stat"><span class="info-stat-label">Score</span><span class="info-stat-value">${f2(c.s)}</span></div>
-      <div class="info-stat"><span class="info-stat-label">vs ${PRIMARY_ASSET}</span><span class="info-stat-value" style="color:${wrColor(c.pb)}">${pct(c.pb)}</span></div>
+      <div class="info-stat"><span class="info-stat-label">vs ${selectedAsset}</span><span class="info-stat-value" style="color:${wrColor(pbVal(c))}">${pct(pbVal(c))}</span></div>
     </div>`;
   }
   let html='';
@@ -418,13 +472,13 @@ function renderInfo() {
     if(hoveredCell){ html+='<div class="info-divider"></div>'+slotHtml(hoveredCell,'Hover','#888'); }
   } else if(pinnedA && pinnedB) {
     html=slotHtml(pinnedA,'A','#4f8ef7')+'<div class="info-divider"></div>'+slotHtml(pinnedB,'B','#f1c40f');
-    const dw=pinnedB.cell.wr-pinnedA.cell.wr, dp=pinnedB.cell.pf-pinnedA.cell.pf, db=pinnedB.cell.pb-pinnedA.cell.pb;
+    const dw=pinnedB.cell.wr-pinnedA.cell.wr, dp=pinnedB.cell.pf-pinnedA.cell.pf, db=pbVal(pinnedB.cell)-pbVal(pinnedA.cell);
     const s=v=>v>=0?'+':'';
     html+=`<div class="info-divider"></div><div class="info-slot">
       <div class="info-slot-header" style="color:var(--muted)">Δ B minus A</div>
       <div class="info-stat"><span class="info-stat-label">Win Rate</span><span class="info-stat-value" style="color:${dw>=0?'#2ecc71':'#e74c3c'}">${s(dw)}${pct(dw)}</span></div>
       <div class="info-stat"><span class="info-stat-label">Profit Factor</span><span class="info-stat-value" style="color:${dp>=0?'#2ecc71':'#e74c3c'}">${s(dp)}${f2(dp)}</span></div>
-      <div class="info-stat"><span class="info-stat-label">vs ${PRIMARY_ASSET}</span><span class="info-stat-value" style="color:${db>=0?'#2ecc71':'#e74c3c'}">${s(db)}${pct(db)}</span></div>
+      <div class="info-stat"><span class="info-stat-label">vs ${selectedAsset}</span><span class="info-stat-value" style="color:${db>=0?'#2ecc71':'#e74c3c'}">${s(db)}${pct(db)}</span></div>
     </div>`;
   }
   el.innerHTML=html;
@@ -454,6 +508,20 @@ function updateCompareBar() {
 document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('compare-clear').addEventListener('click',()=>{
     pinnedA=null; pinnedB=null; updateCompareBar(); renderInfo();
+  });
+
+  // Populate comparison asset dropdown
+  const sel = document.getElementById('comparison-select');
+  AVAILABLE_ASSETS.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a;
+    opt.textContent = a;
+    if (a === PRIMARY_ASSET) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => {
+    selectedAsset = sel.value;
+    renderInfo();
   });
 });
 
@@ -582,6 +650,212 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
     pts.forEach(p=>{const d=Math.abs(tx(p.x)-mx);if(d<md){md=d;cl=p;}});
     if(cl&&md<28) handlePin(cl.period,cl.param,{wr:cl.wr,pf:cl.pf,pb:cl.pb,n:cl.n,s:cl.s});
   });
+}
+
+// ── Signal chart helpers ────────────────────────────────────────────────────
+function countSignalDays(arr) {
+  let c=0; for(let i=0;i<arr.length;i++) if(arr[i]) c++; return c;
+}
+
+// ── Equity Curve ────────────────────────────────────────────────────────────
+function renderEquityCurve(cid, signalKey, condId) {
+  const container=document.getElementById(cid);
+  if(!container) return;
+  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
+  if(!sd) return;
+  const dates=SIGNAL_DATA.dates, strat=sd.strat_curve, asset=sd.asset_curve, bil=sd.bil_curve, n=dates.length;
+  if(n<2) return;
+
+  const W=520,H=200,PAD={t:12,r:14,b:38,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
+  let yMin=Infinity,yMax=-Infinity;
+  for(let i=0;i<n;i++){
+    if(strat[i]!=null){yMin=Math.min(yMin,strat[i]);yMax=Math.max(yMax,strat[i]);}
+    if(asset[i]!=null){yMin=Math.min(yMin,asset[i]);yMax=Math.max(yMax,asset[i]);}
+    if(bil[i]!=null){yMin=Math.min(yMin,bil[i]);yMax=Math.max(yMax,bil[i]);}
+  }
+  const pad=Math.max((yMax-yMin)*0.05,5); yMin-=pad; yMax+=pad;
+  if(yMin===yMax){yMin-=10;yMax+=10;}
+  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+
+  const canvas=document.createElement('canvas');
+  canvas.width=W;canvas.height=H;
+  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
+  container.appendChild(canvas);
+  const ctx=canvas.getContext('2d');
+
+  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
+  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
+
+  function drawLine(data,color,width,dash){
+    ctx.strokeStyle=color;ctx.lineWidth=width;
+    ctx.setLineDash(dash||[]);
+    ctx.beginPath();
+    for(let i=0;i<n;i++){
+      if(data[i]==null) continue;
+      const x=tx(i),y=ty(data[i]);
+      if(i===0||data[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();ctx.setLineDash([]);
+  }
+
+  drawLine(strat,'#2ecc71',2);
+  drawLine(asset,'#4f8ef7',2);
+  drawLine(bil,'#5a6180',1,[4,4]);
+
+  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
+  [0,.25,.5,.75,1].forEach(f=>{const v=yMin+f*(yMax-yMin);ctx.fillText(v.toFixed(0),PAD.l-4,ty(v)+3);});
+
+  ctx.textAlign='center';
+  const step=Math.max(1,Math.floor(n/6));
+  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+14);
+  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+14);
+
+  // On-canvas legend
+  const lx=PAD.l,ly=PAD.t+cH+26;
+  const items=[{l:'Strategy',c:'#2ecc71'},{l:'Buy-Hold',c:'#4f8ef7'},{l:'BIL',c:'#5a6180'}];
+  let ox=lx;
+  items.forEach(item=>{
+    ctx.fillStyle=item.c;ctx.fillRect(ox,ly,10,10);
+    ctx.fillStyle='#5a6180';ctx.textAlign='left';
+    ctx.fillText(item.l,ox+13,ly+9);
+    ox+=ctx.measureText(item.l).width+30;
+  });
+}
+
+// ── Signal Overlay ──────────────────────────────────────────────────────────
+function renderSignalOverlay(cid, signalKey) {
+  const container=document.getElementById(cid);
+  if(!container) return;
+  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
+  if(!sd) return;
+  const dates=SIGNAL_DATA.dates, price=sd.price, signal=sd.signal, n=dates.length;
+  if(n<2) return;
+
+  const W=520,H=170,PAD={t:12,r:14,b:30,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
+  let yMin=Infinity,yMax=-Infinity;
+  for(let i=0;i<n;i++){if(price[i]!=null){yMin=Math.min(yMin,price[i]);yMax=Math.max(yMax,price[i]);}}
+  if(yMin===yMax){yMin-=1;yMax+=1;}
+  const pad=(yMax-yMin)*0.05; yMin-=pad; yMax+=pad;
+  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+
+  const canvas=document.createElement('canvas');
+  canvas.width=W;canvas.height=H;
+  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
+  container.appendChild(canvas);
+  const ctx=canvas.getContext('2d');
+
+  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
+  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
+
+  // Signal bands (green translucent rectangles for contiguous true regions)
+  let bandStart=null;
+  for(let i=0;i<n;i++){
+    if(signal[i]&&bandStart===null) bandStart=i;
+    if(!signal[i]&&bandStart!==null){
+      const x1=tx(bandStart),x2=tx(i-1);
+      ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(x1,PAD.t,x2-x1,cH);
+      bandStart=null;
+    }
+  }
+  if(bandStart!==null){
+    const x1=tx(bandStart),x2=tx(n-1);
+    ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(x1,PAD.t,x2-x1,cH);
+  }
+
+  // Price line
+  ctx.strokeStyle='#5a6180';ctx.lineWidth=1.5;
+  ctx.beginPath();
+  for(let i=0;i<n;i++){
+    if(price[i]==null) continue;
+    const x=tx(i),y=ty(price[i]);
+    if(i===0||price[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+
+  // Signal dots (green)
+  for(let i=0;i<n;i++){
+    if(!signal[i]||price[i]==null) continue;
+    ctx.beginPath();ctx.arc(tx(i),ty(price[i]),2.5,0,Math.PI*2);
+    ctx.fillStyle='#2ecc71';ctx.fill();
+  }
+
+  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
+  [yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(v.toFixed(1),PAD.l-4,ty(v)+3));
+
+  ctx.textAlign='center';
+  const step=Math.max(1,Math.floor(n/6));
+  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+12);
+  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+12);
+}
+
+// ── Indicator Chart ─────────────────────────────────────────────────────────
+function renderIndicatorChart(cid, signalKey, cond) {
+  const container=document.getElementById(cid);
+  if(!container) return;
+  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
+  if(!sd) return;
+  const dates=SIGNAL_DATA.dates, vals=sd.lhs_vals, signal=sd.signal, n=dates.length;
+  if(n<2) return;
+
+  const W=520,H=170,PAD={t:12,r:14,b:30,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
+  let yMin=Infinity,yMax=-Infinity;
+  for(let i=0;i<n;i++){if(vals[i]!=null){yMin=Math.min(yMin,vals[i]);yMax=Math.max(yMax,vals[i]);}}
+  if(yMin===yMax){yMin-=1;yMax+=1;}
+  const pad=(yMax-yMin)*0.05; yMin-=pad; yMax+=pad;
+  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+
+  const canvas=document.createElement('canvas');
+  canvas.width=W;canvas.height=H;
+  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
+  container.appendChild(canvas);
+  const ctx=canvas.getContext('2d');
+
+  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
+  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
+
+  // Signal bands
+  let bandStart=null;
+  for(let i=0;i<n;i++){
+    if(signal[i]&&bandStart===null) bandStart=i;
+    if(!signal[i]&&bandStart!==null){
+      ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(tx(bandStart),PAD.t,tx(i-1)-tx(bandStart),cH);
+      bandStart=null;
+    }
+  }
+  if(bandStart!==null){
+    ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(tx(bandStart),PAD.t,tx(n-1)-tx(bandStart),cH);
+  }
+
+  // Threshold line if fixed
+  if(cond.rhs&&cond.rhs.type==='fixed'&&cond.rhs.value!=null){
+    const thresh=cond.rhs.value;
+    if(thresh>=yMin&&thresh<=yMax){
+      const yThresh=ty(thresh);
+      ctx.strokeStyle='#e74c3c';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(PAD.l,yThresh);ctx.lineTo(PAD.l+cW,yThresh);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#e74c3c';ctx.textAlign='left';ctx.font='8px IBM Plex Mono,monospace';
+      ctx.fillText('threshold: '+thresh,PAD.l+cW-80,yThresh-4);
+    }
+  }
+
+  // Indicator line
+  ctx.strokeStyle='#4f8ef7';ctx.lineWidth=1.5;
+  ctx.beginPath();
+  for(let i=0;i<n;i++){
+    if(vals[i]==null) continue;
+    const x=tx(i),y=ty(vals[i]);
+    if(i===0||vals[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
+  [yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(v.toFixed(1),PAD.l-4,ty(v)+3));
+
+  ctx.textAlign='center';
+  const step=Math.max(1,Math.floor(n/6));
+  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+12);
+  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+12);
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
