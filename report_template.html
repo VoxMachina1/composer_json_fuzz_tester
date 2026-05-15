@@ -90,6 +90,13 @@
   .chart-section{margin-bottom:24px;}
   .section-label{font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;}
   .heatmap-wrap{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:14px;overflow-x:auto;}
+  .uplot-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 14px;
+  overflow: hidden; /* Forces the scrollbar off */
+}
   .heatmap-grid{display:inline-grid;gap:2px;}
   .heatmap-cell{width:26px;height:26px;border-radius:3px;cursor:pointer;transition:transform .1s;border:2px solid transparent;}
   .heatmap-cell:hover{transform:scale(1.25);z-index:10;}
@@ -144,7 +151,9 @@
   .chart-legend-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
   .signal-none{background:rgba(231,76,60,.12);border:1px solid rgba(231,76,60,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--red);margin-bottom:10px;}
   .signal-low{background:rgba(241,196,15,.12);border:1px solid rgba(241,196,15,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--yellow);margin-bottom:10px;}
+  .signal-ok{background:rgba(46,204,113,.1);border:1px solid rgba(46,204,113,.3);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--green);margin-bottom:10px;}
 </style>
+<script>__UPLOT_JS__</script>
 </head>
 <body>
 <div class="layout">
@@ -262,6 +271,154 @@ function pct(v){return(v*100).toFixed(1)+'%';}
 function f2(v){return(v==null||v===undefined)?'—':v.toFixed(2);}
 function pbVal(cell){return(cell&&cell.pb&&cell.pb[selectedAsset]!=null)?cell.pb[selectedAsset]:0;}
 
+// ── JS Indicator Functions (must match Python implementations) ──────────────
+
+function jsSMA(prices, period) {
+  const n = prices.length; const r = new Array(n).fill(null);
+  for (let i = period - 1; i < n; i++) { let s = 0; for (let j = i - period + 1; j <= i; j++) s += prices[j]; r[i] = s / period; }
+  return r;
+}
+function jsEMA(prices, period) {
+  const a = 2 / (period + 1), n = prices.length, r = new Array(n).fill(null);
+  r[0] = prices[0];
+  for (let i = 1; i < n; i++) r[i] = a * prices[i] + (1 - a) * r[i - 1];
+  return r;
+}
+function jsRSI(prices, period) {
+  const n = prices.length, g = new Array(n).fill(0), l = new Array(n).fill(0);
+  g[0] = null; l[0] = null;
+  for (let i = 1; i < n; i++) { const d = prices[i] - prices[i - 1]; if (d > 0) g[i] = d; else l[i] = -d; }
+  const a = 1 / period, ag = new Array(n).fill(null), al = new Array(n).fill(null);
+  let st = 0;
+  for (let i = 0; i < n; i++) { if (g[i] !== null) { ag[i] = g[i]; al[i] = l[i]; st = i; break; } }
+  for (let i = st + 1; i < n; i++) {
+    if (g[i] !== null) { ag[i] = a * g[i] + (1 - a) * ag[i - 1]; al[i] = a * l[i] + (1 - a) * al[i - 1]; }
+    else { ag[i] = ag[i - 1]; al[i] = al[i - 1]; }
+  }
+  const rsi = new Array(n).fill(null);
+  for (let i = 1; i < n; i++) {
+    if (ag[i] === null || al[i] === null) continue;
+    if (al[i] === 0) { rsi[i] = ag[i] === 0 ? null : 100; }
+    else { const rs = ag[i] / al[i]; const v = 100 - 100 / (1 + rs); rsi[i] = v === Infinity ? 100 : v; }
+  }
+  for (let i = 0; i < period && i < n; i++) rsi[i] = null;
+  return rsi;
+}
+function jsCumRet(prices, period) {
+  const n = prices.length, r = new Array(n).fill(null);
+  for (let i = period; i < n; i++) r[i] = ((prices[i] / prices[i - period]) - 1) * 100;
+  return r;
+}
+function jsMaxDD(prices, period) {
+  const n = prices.length, r = new Array(n).fill(null);
+  for (let i = period - 1; i < n; i++) { let p = -Infinity, m = 0; for (let j = i - period + 1; j <= i; j++) { if (prices[j] > p) p = prices[j]; if (p > 0) { const dd = (p - prices[j]) / p; if (dd > m) m = dd; } } r[i] = m * 100; }
+  return r;
+}
+function jsMAReturn(prices, period) {
+  const n = prices.length, dr = new Array(n).fill(null);
+  for (let i = 1; i < n; i++) dr[i] = (prices[i] / prices[i - 1]) - 1;
+  const r = new Array(n).fill(null);
+  for (let i = period; i < n; i++) { let s = 0; for (let j = i - period + 1; j <= i; j++) s += dr[j]; r[i] = s / period; }
+  return r;
+}
+
+// ── indicator dispatch ─────────────────────────────────────────────────────
+const JS_INDICATORS = {
+  RSI: jsRSI, SMA: jsSMA, MA: jsSMA, EMA: jsEMA,
+  CumRet: jsCumRet, MaxDD: jsMaxDD, MAReturn: jsMAReturn,
+};
+
+function computeIndicator(prices, fn, period) {
+  const f = JS_INDICATORS[fn];
+  if (f) return f(prices, period);
+  return prices; // fallback — Price
+}
+
+// ── computeSignal: return boolean array for any (period, param) ────────────
+function computeSignal(key, period, param) {
+  const sd = SIGNAL_DATA.signals && SIGNAL_DATA.signals[key];
+  if (!sd) return null;
+  const n = SIGNAL_DATA.dates.length;
+  const pNum = Number(period), paNum = Number(param);
+  const lhsVals = computeIndicator(sd.lhs, sd.fn_l, sd.wl);
+  const lhsActual = (pNum !== sd.wl && sd.fn_l)
+    ? computeIndicator(sd.lhs, sd.fn_l, pNum)
+    : lhsVals;
+  const lhsSeries = lhsActual;
+
+  let fired = new Array(n).fill(false);
+  if (sd.fn_r) {
+    const rhsActual = (paNum !== sd.wr && sd.fn_r && sd.rhs)
+      ? computeIndicator(sd.rhs, sd.fn_r, paNum)
+      : (sd.rhs ? computeIndicator(sd.rhs, sd.fn_r, sd.wr) : new Array(n).fill(0));
+    for (let i = 0; i < n; i++) {
+      if (lhsSeries[i] === null || rhsActual[i] === null) continue;
+      switch (sd.cmp) {
+        case 'gt': fired[i] = lhsSeries[i] > rhsActual[i]; break;
+        case 'lt': fired[i] = lhsSeries[i] < rhsActual[i]; break;
+        case 'gte': fired[i] = lhsSeries[i] >= rhsActual[i]; break;
+        case 'lte': fired[i] = lhsSeries[i] <= rhsActual[i]; break;
+        case 'eq': fired[i] = lhsSeries[i] === rhsActual[i]; break;
+        case 'neq': fired[i] = lhsSeries[i] !== rhsActual[i]; break;
+        default: fired[i] = lhsSeries[i] > rhsActual[i];
+      }
+    }
+  } else {
+    const thresh = sd.fv;
+    for (let i = 0; i < n; i++) {
+      if (lhsSeries[i] === null) continue;
+      switch (sd.cmp) {
+        case 'gt': fired[i] = lhsSeries[i] > thresh; break;
+        case 'lt': fired[i] = lhsSeries[i] < thresh; break;
+        case 'gte': fired[i] = lhsSeries[i] >= thresh; break;
+        case 'lte': fired[i] = lhsSeries[i] <= thresh; break;
+        case 'eq': fired[i] = lhsSeries[i] === thresh; break;
+        case 'neq': fired[i] = lhsSeries[i] !== thresh; break;
+        default: fired[i] = lhsSeries[i] > thresh;
+      }
+    }
+  }
+  return fired;
+}
+
+// ── Equity curve builder ────────────────────────────────────────────────────
+function buildEquityCurve(key, sig) {
+  const sd = SIGNAL_DATA.signals[key];
+  if (!sd) return null;
+  const returns = SIGNAL_DATA.returns;
+  const epRet = returns[sd.ep_t];
+  const bilRet = returns.BIL;
+  if (!epRet || !bilRet) return null;
+  const n = SIGNAL_DATA.dates.length;
+  const strat = new Array(n);
+  const bh = new Array(n);
+  const bil = new Array(n);
+  strat[0] = 100; bh[0] = 100; bil[0] = 100;
+  for (let i = 1; i < n; i++) {
+    const sr = sig[i] ? (epRet[i] || 0) : (bilRet[i] || 0);
+    strat[i] = strat[i - 1] * (1 + sr);
+    bh[i] = bh[i - 1] * (1 + (epRet[i] || 0));
+    bil[i] = bil[i - 1] * (1 + (bilRet[i] || 0));
+  }
+  return { strat, bh, bil };
+}
+
+// ── uPlot wrapper helpers ───────────────────────────────────────────────────
+const chartOpts = { width: 560, height: 200 };
+
+function uTs(dateStr) { return new Date(dateStr).getTime() / 1000; }
+
+const CHART_THEME = {
+  bg: '#141720', grid: '#2a2f3e', muted: '#5a6180', text: '#c8cfe0',
+  green: '#2ecc71', blue: '#4f8ef7', grey: '#5a6180', red: '#e74c3c',
+};
+
+// ── Chart instance manager ──────────────────────────────────────────────────
+let plotInstances = {};
+function destroyPlot(id) {
+  if (plotInstances[id]) { try { plotInstances[id].destroy(); } catch(e) {} delete plotInstances[id]; }
+}
+
 // ── Lazy sidebar tree ───────────────────────────────────────────────────────
 function buildTree() {
   const container = document.getElementById('logic-tree');
@@ -376,29 +533,18 @@ function switchAlloc(condId, alloc) {
   renderChartsForAlloc(condId, alloc, cond);
 }
 
+// ── renderChartsForAlloc ────────────────────────────────────────────────────
 function renderChartsForAlloc(condId, alloc, cond) {
   const area = document.getElementById('charts-area');
   if(!area) return;
   const key  = condId+':'+(alloc||'(none)');
   const hd   = HEATMAP_DATA[key];
-  const sd   = SIGNAL_DATA && SIGNAL_DATA[key];
+  const sd   = SIGNAL_DATA && SIGNAL_DATA.signals && SIGNAL_DATA.signals[key];
 
   if(!hd) {
     const err = cond.alloc_errors&&cond.alloc_errors[alloc] || 'No data available';
     area.innerHTML = `<div class="error-box">⚠ ${alloc}: ${err}</div>`;
     return;
-  }
-
-  // Count signal days for low-data warning
-  let signalCount = 0;
-  if(sd && sd.signal) {
-    for(let i=0;i<sd.signal.length;i++) if(sd.signal[i]) signalCount++;
-  }
-  let warnHtml = '';
-  if(sd && signalCount === 0) {
-    warnHtml = '<div class="signal-none">⚠ Condition never fired — signal charts show BIL baseline only</div>';
-  } else if(sd && signalCount < 20) {
-    warnHtml = `<div class="signal-low">⚠ Only ${signalCount} signal day${signalCount===1?'':'s'} in date range — charts based on very sparse data</div>`;
   }
 
   const is1d = hd.is_1d;
@@ -414,23 +560,9 @@ function renderChartsForAlloc(condId, alloc, cond) {
       <div class="heatmap-wrap"><div id="pf-c"></div>
         ${is1d?'':'<div class="heatmap-legend"><span>Low</span><div class="legend-gradient" style="background:linear-gradient(to right,#e74c3c,#f1c40f,#2ecc71)"></div><span>High</span></div>'}
       </div>
-    </div>
-    ${sd ? `
-    ${warnHtml}
-    <div class="chart-section">
-      <div class="section-label">Equity Curves</div>
-      <div class="heatmap-wrap"><div id="eq-c"></div></div>
-    </div>
-    <div class="chart-section">
-      <div class="section-label">Price &amp; Signal Overlay</div>
-      <div class="heatmap-wrap"><div id="so-c-${condId}"></div></div>
-    </div>
-    <div class="chart-section">
-      <div class="section-label">Indicator Values</div>
-      <div class="heatmap-wrap"><div id="ind-c-${condId}"></div></div>
-    </div>
-    ` : ''}`;
+    </div>`;
 
+  // Heatmap / line
   if(is1d) {
     renderLine('wr-c', hd, 'wr', wrColor, v=>pct(v));
     renderLine('pf-c', hd, 'pf', pfColor, v=>f2(v));
@@ -438,11 +570,28 @@ function renderChartsForAlloc(condId, alloc, cond) {
     renderHeatmap('wr-c', hd, 'wr', condId);
     renderHeatmap('pf-c', hd, 'pf', condId);
   }
-  if(sd) {
-    renderEquityCurve('eq-c', key, condId);
-    renderSignalOverlay('so-c-'+condId, key);
-    renderIndicatorChart('ind-c-'+condId, key, cond);
-  }
+
+  if (!sd) return;
+  const sig = computeSignal(key, sd.bp, sd.bp2);
+  if (!sig) return;
+  const signalCount = sig.filter(Boolean).length;
+  let warnHtml = '';
+  if (signalCount === 0) warnHtml = '<div class="signal-none">⚠ Condition never fired — signal charts show BIL baseline only</div>';
+  else if (signalCount < 20) warnHtml = `<div class="signal-low">⚠ Only ${signalCount} signal day${signalCount===1?'':'s'} in date range</div>`;
+  else warnHtml = `<div class="signal-ok">${signalCount} signal day${signalCount===1?'':'s'} in date range</div>`;
+
+  area.insertAdjacentHTML('beforeend', `
+    ${warnHtml}
+    <div class="chart-section"><div class="section-label">Equity Curves</div><div class="uplot-wrap"><div id="eq-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Price &amp; Signal Overlay</div><div class="uplot-wrap"><div id="so-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Indicator Values</div><div class="uplot-wrap"><div id="ind-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Profile</div><div class="uplot-wrap"><div id="profile-c"></div></div></div>
+  `);
+
+  renderEquityCurve('eq-c', key, sd.bp, sd.bp2);
+  renderSignalOverlay('so-c', key, sd.bp, sd.bp2);
+  renderIndicatorChart('ind-c', key, sd.bp, sd.bp2, cond);
+  renderProfileCharts('profile-c', key, hd, sd.bp, sd.bp2);
 }
 
 // ── Info panel ──────────────────────────────────────────────────────────────
@@ -534,7 +683,6 @@ function renderHeatmap(cid, hd, metric, condId) {
   grid.className='heatmap-grid';
   grid.style.gridTemplateColumns=`24px ${hd.params.map(()=>'26px').join(' ')}`;
 
-  // Header row
   grid.appendChild(document.createElement('div'));
   hd.params.forEach(p=>{
     const el=document.createElement('div');
@@ -560,7 +708,16 @@ function renderHeatmap(cid, hd, metric, condId) {
         el.addEventListener('mouseleave',()=>{hoveredCell=null;renderInfo();});
         el.addEventListener('click',()=>{
           handlePin(p,pa,cell);
-          // Refresh pin borders in all current charts
+          if (currentCondId !== null && currentAlloc !== null) {
+            const k = currentCondId+':'+currentAlloc;
+            const sd = SIGNAL_DATA.signals && SIGNAL_DATA.signals[k];
+            if (sd) {
+              renderEquityCurve('eq-c', k, p, pa);
+              renderSignalOverlay('so-c', k, p, pa);
+              renderIndicatorChart('ind-c', k, p, pa, CONDITIONS.find(c=>c.id===currentCondId));
+              renderProfileCharts('profile-c', k, HEATMAP_DATA[k], p, pa);
+            }
+          }
           document.querySelectorAll('.heatmap-cell.pinned-a,.heatmap-cell.pinned-b')
             .forEach(e=>e.classList.remove('pinned-a','pinned-b'));
           if(pinnedA) document.querySelectorAll(`.heatmap-cell[data-p="${pinnedA.period}"][data-pa="${pinnedA.param}"]`).forEach(e=>e.classList.add('pinned-a'));
@@ -571,6 +728,7 @@ function renderHeatmap(cid, hd, metric, condId) {
       grid.appendChild(el);
     });
   });
+  container.innerHTML='';
   container.appendChild(grid);
 }
 
@@ -599,11 +757,9 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
   container.appendChild(canvas);
   const ctx=canvas.getContext('2d');
 
-  // Grid lines
   ctx.strokeStyle='#2a2f3e'; ctx.lineWidth=1;
   [.25,.5,.75].forEach(f=>{ const y=PAD.t+f*cH; ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke(); });
 
-  // Reference line (50% for WR, 1.0 for PF)
   const ref=metric==='wr'?.5:1.0, yRef=ty(ref);
   if(yRef>=PAD.t&&yRef<=PAD.t+cH){
     ctx.strokeStyle='#4f8ef744';ctx.setLineDash([4,4]);
@@ -611,7 +767,6 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
     ctx.setLineDash([]);
   }
 
-  // Fill
   const grad=ctx.createLinearGradient(0,PAD.t,0,PAD.t+cH);
   grad.addColorStop(0,'rgba(79,142,247,.18)');grad.addColorStop(1,'rgba(79,142,247,.01)');
   ctx.fillStyle=grad;
@@ -619,18 +774,14 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
   pts.forEach(p=>ctx.lineTo(tx(p.x),ty(p.v)));
   ctx.lineTo(tx(pts[pts.length-1].x),PAD.t+cH);ctx.closePath();ctx.fill();
 
-  // Line
   ctx.strokeStyle='#4f8ef7';ctx.lineWidth=2;ctx.lineJoin='round';
   ctx.beginPath();pts.forEach((p,i)=>i===0?ctx.moveTo(tx(p.x),ty(p.v)):ctx.lineTo(tx(p.x),ty(p.v)));ctx.stroke();
 
-  // Dots
   pts.forEach(p=>{ctx.beginPath();ctx.arc(tx(p.x),ty(p.v),3,0,Math.PI*2);ctx.fillStyle=colorFn(p.v);ctx.fill();});
 
-  // Y labels
   ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
   [yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(fmtFn(v),PAD.l-4,ty(v)+3));
 
-  // X labels
   ctx.textAlign='center';
   const step=Math.ceil(pts.length/7);
   pts.forEach((p,i)=>{if(i%step===0||i===pts.length-1) ctx.fillText(p.x,tx(p.x),PAD.t+cH+12);});
@@ -652,214 +803,304 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
   });
 }
 
-// ── Signal chart helpers ────────────────────────────────────────────────────
-function countSignalDays(arr) {
-  let c=0; for(let i=0;i<arr.length;i++) if(arr[i]) c++; return c;
+// ── uPlot: Equity Curve (log scale, signal bands via drawClear) ────────────
+// ── uPlot: Equity Curve (log scale, signal bands via drawClear) ────────────
+function renderEquityCurve(cid, key, period, param) {
+  destroyPlot(cid + '-eq');
+  const container = document.getElementById(cid);
+  if (!container) return;
+  container.innerHTML = '';
+  const sig = computeSignal(key, period, param);
+  if (!sig) return;
+  const eq = buildEquityCurve(key, sig);
+  if (!eq) return;
+  const dates = SIGNAL_DATA.dates;
+  const tss = dates.map(uTs);
+
+  const data = [
+    tss,
+    eq.strat.map(v => Math.round(v * 100) / 100),
+    eq.bh.map(v => Math.round(v * 100) / 100),
+    eq.bil.map(v => Math.round(v * 100) / 100),
+  ];
+
+  const cWidth = container.clientWidth || chartOpts.width;
+
+  plotInstances[cid + '-eq'] = new uPlot({
+    width: cWidth,
+    height: chartOpts.height,
+    cursor: { show: false },
+    select: { show: false },
+    legend: { show: false },
+    scales: {
+      x: { time: true },
+      y: { distr: 2, log: 10 }, // log scale
+    },
+    axes: [
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => {
+        const d = new Date(t * 1000);
+        return d.toISOString().slice(0, 7);
+      })},
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+    ],
+    series: [
+      {},
+      { label: 'Strategy', stroke: CHART_THEME.green, width: 2, fill: 'rgba(46,204,113,0.05)' },
+      { label: 'Buy-Hold', stroke: CHART_THEME.blue, width: 2, fill: 'rgba(79,142,247,0.05)' },
+      { label: 'BIL', stroke: CHART_THEME.grey, width: 1, dashes: [4, 4] },
+    ],
+    hooks: {
+      drawClear: [uplot => {
+        const { ctx } = uplot;
+        const sig = computeSignal(key, period, param);
+        if (!sig) return;
+        const data = uplot.data;
+        const tss = data[0];
+        let bandStart = null;
+        for (let i = 0; i < tss.length; i++) {
+          if (sig[i] && bandStart === null) bandStart = tss[i];
+          if (!sig[i] && bandStart !== null) {
+            const x1 = uplot.valToPos(bandStart, 'x');
+            const x2 = uplot.valToPos(tss[i - 1], 'x');
+            ctx.fillStyle = 'rgba(46,204,113,0.08)';
+            ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+            bandStart = null;
+          }
+        }
+        if (bandStart !== null) {
+          const x1 = uplot.valToPos(bandStart, 'x');
+          const x2 = uplot.valToPos(tss[tss.length - 1], 'x');
+          ctx.fillStyle = 'rgba(46,204,113,0.08)';
+          ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+        }
+      }],
+    },
+  }, data, container);
+
+  plotInstances[cid + '-eq']._h = chartOpts.height;
 }
 
-// ── Equity Curve ────────────────────────────────────────────────────────────
-function renderEquityCurve(cid, signalKey, condId) {
-  const container=document.getElementById(cid);
-  if(!container) return;
-  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
-  if(!sd) return;
-  const dates=SIGNAL_DATA.dates, strat=sd.strat_curve, asset=sd.asset_curve, bil=sd.bil_curve, n=dates.length;
-  if(n<2) return;
+// ── uPlot: Signal Overlay ───────────────────────────────────────────────────
+// ── uPlot: Signal Overlay ───────────────────────────────────────────────────
+function renderSignalOverlay(cid, key, period, param) {
+  destroyPlot(cid + '-so');
+  const container = document.getElementById(cid);
+  if (!container) return;
+  container.innerHTML = '';
+  const sd = SIGNAL_DATA.signals && SIGNAL_DATA.signals[key];
+  if (!sd) return;
+  const sig = computeSignal(key, period, param);
+  if (!sig) return;
+  const dates = SIGNAL_DATA.dates;
+  const tss = dates.map(uTs);
+  const prices = sd.ep;
 
-  const W=520,H=200,PAD={t:12,r:14,b:38,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
-  let yMin=Infinity,yMax=-Infinity;
-  for(let i=0;i<n;i++){
-    if(strat[i]!=null){yMin=Math.min(yMin,strat[i]);yMax=Math.max(yMax,strat[i]);}
-    if(asset[i]!=null){yMin=Math.min(yMin,asset[i]);yMax=Math.max(yMax,asset[i]);}
-    if(bil[i]!=null){yMin=Math.min(yMin,bil[i]);yMax=Math.max(yMax,bil[i]);}
-  }
-  const pad=Math.max((yMax-yMin)*0.05,5); yMin-=pad; yMax+=pad;
-  if(yMin===yMax){yMin-=10;yMax+=10;}
-  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+  const priceData = tss.map((t, i) => prices[i] !== null ? prices[i] : null);
+  // Dot series: only on signal days
+  const dotData = tss.map((t, i) => sig[i] && prices[i] !== null ? prices[i] : null);
 
-  const canvas=document.createElement('canvas');
-  canvas.width=W;canvas.height=H;
-  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
-  container.appendChild(canvas);
-  const ctx=canvas.getContext('2d');
+  const cWidth = container.clientWidth || chartOpts.width;
 
-  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
-  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
+  plotInstances[cid + '-so'] = new uPlot({
+    width: cWidth,
+    height: 170,
+    tzDate: d => d,
+    cursor: { show: false },
+    select: { show: false },
+    legend: { show: false },
+    scales: { x: { time: true }, y: { auto: true } },
+    axes: [
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+    ],
+    series: [
+      {},
+      { label: 'Price', stroke: CHART_THEME.grey, width: 1.5, points: { show: false } },
+      { label: 'Signal', stroke: CHART_THEME.green, width: 0, points: { show: true, size: 3, fill: CHART_THEME.green, stroke: CHART_THEME.green } },
+    ],
+    hooks: {
+      drawClear: [uplot => {
+        const { ctx } = uplot;
+        const sig = computeSignal(key, period, param);
+        if (!sig) return;
+        const data = uplot.data;
+        const tss = data[0];
+        let bandStart = null;
+        for (let i = 0; i < tss.length; i++) {
+          if (sig[i] && bandStart === null) bandStart = tss[i];
+          if (!sig[i] && bandStart !== null) {
+            const x1 = uplot.valToPos(bandStart, 'x');
+            const x2 = uplot.valToPos(tss[i - 1], 'x');
+            ctx.fillStyle = 'rgba(46,204,113,0.08)';
+            ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+            bandStart = null;
+          }
+        }
+        if (bandStart !== null) {
+          const x1 = uplot.valToPos(bandStart, 'x');
+          const x2 = uplot.valToPos(tss[tss.length - 1], 'x');
+          ctx.fillStyle = 'rgba(46,204,113,0.08)';
+          ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+        }
+      }],
+    },
+  }, [tss, priceData, dotData], container);
 
-  function drawLine(data,color,width,dash){
-    ctx.strokeStyle=color;ctx.lineWidth=width;
-    ctx.setLineDash(dash||[]);
-    ctx.beginPath();
-    for(let i=0;i<n;i++){
-      if(data[i]==null) continue;
-      const x=tx(i),y=ty(data[i]);
-      if(i===0||data[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-    }
-    ctx.stroke();ctx.setLineDash([]);
-  }
-
-  drawLine(strat,'#2ecc71',2);
-  drawLine(asset,'#4f8ef7',2);
-  drawLine(bil,'#5a6180',1,[4,4]);
-
-  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
-  [0,.25,.5,.75,1].forEach(f=>{const v=yMin+f*(yMax-yMin);ctx.fillText(v.toFixed(0),PAD.l-4,ty(v)+3);});
-
-  ctx.textAlign='center';
-  const step=Math.max(1,Math.floor(n/6));
-  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+14);
-  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+14);
-
-  // On-canvas legend
-  const lx=PAD.l,ly=PAD.t+cH+26;
-  const items=[{l:'Strategy',c:'#2ecc71'},{l:'Buy-Hold',c:'#4f8ef7'},{l:'BIL',c:'#5a6180'}];
-  let ox=lx;
-  items.forEach(item=>{
-    ctx.fillStyle=item.c;ctx.fillRect(ox,ly,10,10);
-    ctx.fillStyle='#5a6180';ctx.textAlign='left';
-    ctx.fillText(item.l,ox+13,ly+9);
-    ox+=ctx.measureText(item.l).width+30;
-  });
+  plotInstances[cid + '-so']._h = 170;
 }
 
-// ── Signal Overlay ──────────────────────────────────────────────────────────
-function renderSignalOverlay(cid, signalKey) {
-  const container=document.getElementById(cid);
-  if(!container) return;
-  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
-  if(!sd) return;
-  const dates=SIGNAL_DATA.dates, price=sd.price, signal=sd.signal, n=dates.length;
-  if(n<2) return;
+// ── uPlot: Indicator Chart ──────────────────────────────────────────────────
+// ── uPlot: Indicator Chart ──────────────────────────────────────────────────
+function renderIndicatorChart(cid, key, period, param, cond) {
+  destroyPlot(cid + '-ind');
+  const container = document.getElementById(cid);
+  if (!container) return;
+  container.innerHTML = '';
+  const sd = SIGNAL_DATA.signals && SIGNAL_DATA.signals[key];
+  if (!sd) return;
+  const sig = computeSignal(key, period, param);
+  if (!sig) return;
+  const dates = SIGNAL_DATA.dates;
+  const tss = dates.map(uTs);
 
-  const W=520,H=170,PAD={t:12,r:14,b:30,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
-  let yMin=Infinity,yMax=-Infinity;
-  for(let i=0;i<n;i++){if(price[i]!=null){yMin=Math.min(yMin,price[i]);yMax=Math.max(yMax,price[i]);}}
-  if(yMin===yMax){yMin-=1;yMax+=1;}
-  const pad=(yMax-yMin)*0.05; yMin-=pad; yMax+=pad;
-  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+  // Compute indicator values for the clicked period
+  const indPeriod = period !== undefined && period !== null ? parseInt(period) : parseInt(sd.wl);
+  const indVals = sd.fn_l
+    ? computeIndicator(sd.lhs, sd.fn_l, indPeriod)
+    : sd.ep;
+  // For threshold line
+  const isFixed = sd.fn_r === null;
+  const threshVal = isFixed ? sd.fv : null;
 
-  const canvas=document.createElement('canvas');
-  canvas.width=W;canvas.height=H;
-  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
-  container.appendChild(canvas);
-  const ctx=canvas.getContext('2d');
+  const indData = tss.map((t, i) => indVals[i] !== null ? indVals[i] : null);
+  const threshData = threshVal !== null ? tss.map(() => threshVal) : null;
 
-  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
-  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
-
-  // Signal bands (green translucent rectangles for contiguous true regions)
-  let bandStart=null;
-  for(let i=0;i<n;i++){
-    if(signal[i]&&bandStart===null) bandStart=i;
-    if(!signal[i]&&bandStart!==null){
-      const x1=tx(bandStart),x2=tx(i-1);
-      ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(x1,PAD.t,x2-x1,cH);
-      bandStart=null;
-    }
-  }
-  if(bandStart!==null){
-    const x1=tx(bandStart),x2=tx(n-1);
-    ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(x1,PAD.t,x2-x1,cH);
+  const series = [
+    {},
+    { label: sd.fn_l || 'Indicator', stroke: CHART_THEME.blue, width: 1.5, points: { show: false } },
+  ];
+  if (threshData) {
+    series.push({ label: 'Threshold', stroke: CHART_THEME.red, width: 1, dashes: [4, 4], points: { show: false } });
   }
 
-  // Price line
-  ctx.strokeStyle='#5a6180';ctx.lineWidth=1.5;
-  ctx.beginPath();
-  for(let i=0;i<n;i++){
-    if(price[i]==null) continue;
-    const x=tx(i),y=ty(price[i]);
-    if(i===0||price[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-  }
-  ctx.stroke();
+  const cWidth = container.clientWidth || chartOpts.width;
 
-  // Signal dots (green)
-  for(let i=0;i<n;i++){
-    if(!signal[i]||price[i]==null) continue;
-    ctx.beginPath();ctx.arc(tx(i),ty(price[i]),2.5,0,Math.PI*2);
-    ctx.fillStyle='#2ecc71';ctx.fill();
-  }
+  plotInstances[cid + '-ind'] = new uPlot({
+    width: cWidth,
+    height: 170,
+    tzDate: d => d,
+    cursor: { show: false },
+    select: { show: false },
+    legend: { show: false },
+    scales: { x: { time: true }, y: { auto: true } },
+    axes: [
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+    ],
+    series,
+    hooks: {
+      drawClear: [uplot => {
+        const { ctx } = uplot;
+        const sig = computeSignal(key, period, param);
+        if (!sig) return;
+        const data = uplot.data;
+        const tss = data[0];
+        let bandStart = null;
+        for (let i = 0; i < tss.length; i++) {
+          if (sig[i] && bandStart === null) bandStart = tss[i];
+          if (!sig[i] && bandStart !== null) {
+            const x1 = uplot.valToPos(bandStart, 'x');
+            const x2 = uplot.valToPos(tss[i - 1], 'x');
+            ctx.fillStyle = 'rgba(46,204,113,0.08)';
+            ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+            bandStart = null;
+          }
+        }
+        if (bandStart !== null) {
+          const x1 = uplot.valToPos(bandStart, 'x');
+          const x2 = uplot.valToPos(tss[tss.length - 1], 'x');
+          ctx.fillStyle = 'rgba(46,204,113,0.08)';
+          ctx.fillRect(x1, 0, x2 - x1, uplot.bbox.height / window.devicePixelRatio);
+        }
+      }],
+    },
+  }, threshData ? [tss, indData, threshData] : [tss, indData], container);
 
-  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
-  [yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(v.toFixed(1),PAD.l-4,ty(v)+3));
-
-  ctx.textAlign='center';
-  const step=Math.max(1,Math.floor(n/6));
-  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+12);
-  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+12);
+  plotInstances[cid + '-ind']._h = 170;
 }
 
-// ── Indicator Chart ─────────────────────────────────────────────────────────
-function renderIndicatorChart(cid, signalKey, cond) {
-  const container=document.getElementById(cid);
-  if(!container) return;
-  const sd=SIGNAL_DATA&&SIGNAL_DATA[signalKey];
-  if(!sd) return;
-  const dates=SIGNAL_DATA.dates, vals=sd.lhs_vals, signal=sd.signal, n=dates.length;
-  if(n<2) return;
+function renderProfileLine(cid, label, xs, wrs, pfs, markerX) {
+  if (xs.length < 2) return;
+  const data = [xs, wrs, pfs];
+  const marker = markerX !== null && markerX !== undefined;
 
-  const W=520,H=170,PAD={t:12,r:14,b:30,l:42},cW=W-PAD.l-PAD.r,cH=H-PAD.t-PAD.b;
-  let yMin=Infinity,yMax=-Infinity;
-  for(let i=0;i<n;i++){if(vals[i]!=null){yMin=Math.min(yMin,vals[i]);yMax=Math.max(yMax,vals[i]);}}
-  if(yMin===yMax){yMin-=1;yMax+=1;}
-  const pad=(yMax-yMin)*0.05; yMin-=pad; yMax+=pad;
-  const tx=i=>PAD.l+(i/(n-1))*cW, ty=v=>PAD.t+(1-(v-yMin)/(yMax-yMin))*cH;
+  const container = document.getElementById(cid);
+  const cWidth = container.clientWidth || (chartOpts.width - 40);
 
-  const canvas=document.createElement('canvas');
-  canvas.width=W;canvas.height=H;
-  canvas.style.cssText=`width:${W}px;height:${H}px;display:block;`;
-  container.appendChild(canvas);
-  const ctx=canvas.getContext('2d');
+  plotInstances[cid] = new uPlot({
+    width: cWidth,
+    height: 170,
+    cursor: { show: false },
+    select: { show: false },
+    legend: { show: false },
+    scales: {
+      x: { time: false },
+      y: { range: [0, 1] },
+      'y2': { range: [0, null], ori: 1 },
+    },
+    axes: [
+      { scale: 'x', stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 40 },
+      { scale: 'y', side: 3, stroke: CHART_THEME.green, grid: { show: false }, ticks: { show: false }, font: '8px IBM Plex Mono,monospace', size: 35, values: (_, ticks) => ticks.map(v => (v * 100).toFixed(0) + '%') },
+      { scale: 'y2', side: 1, stroke: CHART_THEME.blue, grid: { show: false }, ticks: { show: false }, font: '8px IBM Plex Mono,monospace', size: 35 },
+    ],
+    series: [
+      {},
+      { label: 'Win Rate', scale: 'y', stroke: CHART_THEME.green, width: 2, points: { show: true, size: 3, fill: CHART_THEME.green, stroke: CHART_THEME.green } },
+      { label: 'Profit Factor', scale: 'y2', stroke: CHART_THEME.blue, width: 1.5, dashes: [3, 3], points: { show: true, size: 2, fill: CHART_THEME.blue, stroke: CHART_THEME.blue } },
+    ],
+    hooks: {
+      drawClear: [uplot => {
+        if (!marker) return;
+        const { ctx } = uplot;
+        const mx = parseFloat(markerX);
+        const xPx = uplot.valToPos(mx, 'x');
+        ctx.strokeStyle = '#e67e22';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(xPx, 0);
+        ctx.lineTo(xPx, uplot.bbox.height / window.devicePixelRatio);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Label
+        ctx.fillStyle = '#e67e22';
+        ctx.font = '8px IBM Plex Mono,monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('base: ' + markerX, xPx, 10);
+      }],
+    },
+  }, data, container);
 
-  ctx.strokeStyle='#2a2f3e';ctx.lineWidth=1;
-  [.25,.5,.75].forEach(f=>{const y=PAD.t+f*cH;ctx.beginPath();ctx.moveTo(PAD.l,y);ctx.lineTo(PAD.l+cW,y);ctx.stroke();});
-
-  // Signal bands
-  let bandStart=null;
-  for(let i=0;i<n;i++){
-    if(signal[i]&&bandStart===null) bandStart=i;
-    if(!signal[i]&&bandStart!==null){
-      ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(tx(bandStart),PAD.t,tx(i-1)-tx(bandStart),cH);
-      bandStart=null;
-    }
-  }
-  if(bandStart!==null){
-    ctx.fillStyle='rgba(46,204,113,.1)';ctx.fillRect(tx(bandStart),PAD.t,tx(n-1)-tx(bandStart),cH);
-  }
-
-  // Threshold line if fixed
-  if(cond.rhs&&cond.rhs.type==='fixed'&&cond.rhs.value!=null){
-    const thresh=cond.rhs.value;
-    if(thresh>=yMin&&thresh<=yMax){
-      const yThresh=ty(thresh);
-      ctx.strokeStyle='#e74c3c';ctx.lineWidth=1;ctx.setLineDash([4,4]);
-      ctx.beginPath();ctx.moveTo(PAD.l,yThresh);ctx.lineTo(PAD.l+cW,yThresh);ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle='#e74c3c';ctx.textAlign='left';ctx.font='8px IBM Plex Mono,monospace';
-      ctx.fillText('threshold: '+thresh,PAD.l+cW-80,yThresh-4);
-    }
-  }
-
-  // Indicator line
-  ctx.strokeStyle='#4f8ef7';ctx.lineWidth=1.5;
-  ctx.beginPath();
-  for(let i=0;i<n;i++){
-    if(vals[i]==null) continue;
-    const x=tx(i),y=ty(vals[i]);
-    if(i===0||vals[i-1]==null) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-  }
-  ctx.stroke();
-
-  ctx.fillStyle='#5a6180';ctx.font='9px IBM Plex Mono,monospace';ctx.textAlign='right';
-  [yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(v.toFixed(1),PAD.l-4,ty(v)+3));
-
-  ctx.textAlign='center';
-  const step=Math.max(1,Math.floor(n/6));
-  for(let i=0;i<n;i+=step) ctx.fillText(dates[i].slice(0,7),tx(i),PAD.t+cH+12);
-  if((n-1)%step!==0) ctx.fillText(dates[n-1].slice(0,7),tx(n-1),PAD.t+cH+12);
+  plotInstances[cid]._h = 170;
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
 buildTree();
+
+// ── Responsive Chart Resizing ───────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  Object.values(plotInstances).forEach(plot => {
+    if (plot && plot.root) {
+      const container = plot.root.parentElement;
+      if (container && container.clientWidth > 0) {
+        // Redraw at the new container width while preserving logical height
+        plot.setSize({ width: container.clientWidth, height: plot._h });
+      }
+    }
+  });
+});
+
+
 </script>
 </body>
 </html>
