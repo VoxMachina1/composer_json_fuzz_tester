@@ -1,31 +1,22 @@
-# Ignore virtual environments
+# Python
 .venv/
 venv/
 env/
-
-# Ignore Python cache
 __pycache__/
 *.pyc
 
-# Ignore API Keys (CRITICAL)
+# API keys (CRITICAL)
 strategy_engine/.env
 .env
 
-# Ignore large downloaded datasets and generated results
+# Price data
 strategy_engine/data/*.csv
-strategy_engine/results/*.csv
 
-# Ignore pathfinder generated output files
-pathfinder/paths*.txt
-pathfinder/tree.txt**/.~lock.*
+# Generated HTML reports
+/*.html
+fuzz_report_*.html
 
-# Misc paste ins
-strategy_filter/filtered.csv
-strategy_filter/filter_summary.txt
-
-# Ignore all HTML in root
-/*.HTML
-
-# Personal Documentation
+# Agent documentation
 HANDOFF.md
 ORIENTATION_NOTES.md
+AGENTS.md

@@ -15,7 +15,6 @@ Usage:
 
 import json
 import sys
-import os
 import math
 import numpy as np
 import pandas as pd
@@ -451,7 +450,7 @@ def _apply_comparator(comp, lhs_vals, rhs_vals):
     if comp == "neq":  return lhs_vals != rhs_vals
     return lhs_vals > rhs_vals  # fallback
 
-def _evaluate_signal(combined, fired_mask, bil_returns, primary_returns, period_val, param_val):
+def _evaluate_signal(combined, fired_mask, bil_returns, all_returns, period_val, param_val):
     """Helper to calculate standard sweep metrics for a fired condition."""
     fired_idx = combined.index[fired_mask]
     if len(fired_idx) < 2:
@@ -463,7 +462,6 @@ def _evaluate_signal(combined, fired_mask, bil_returns, primary_returns, period_
         return None
 
     bil_aligned  = bil_returns.reindex(fired_returns.index, fill_value=0)
-    pri_aligned  = primary_returns.reindex(fired_returns.index, fill_value=0)
 
     wins  = (fired_returns.values > bil_aligned.values).sum()
     total = len(fired_returns)
@@ -477,7 +475,11 @@ def _evaluate_signal(combined, fired_mask, bil_returns, primary_returns, period_
     losses = abs(fired_returns[fired_returns < 0].sum())
     pf     = gains / losses if losses > 0 else (2.0 if gains > 0 else 0.0)
 
-    prim_wins = (fired_returns.values > pri_aligned.values).sum()
+    beat_rates = {}
+    for ticker, returns in all_returns.items():
+        aligned = returns.reindex(fired_returns.index, fill_value=0)
+        ticker_wins = (fired_returns.values > aligned.values).sum()
+        beat_rates[ticker] = round(ticker_wins / total, 4)
 
     return {
         "period":             period_val,
@@ -486,10 +488,10 @@ def _evaluate_signal(combined, fired_mask, bil_returns, primary_returns, period_
         "total_trades":       total,
         "score":              round(score, 4),
         "profit_factor":      round(min(pf, 99.0), 4),
-        "primary_beat_rate":  round(prim_wins / total, 4),
+        "beat_rates":         beat_rates,
     }
 
-def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
+def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
     """
     Runs a 2D sweep over (period, threshold/window) for a single condition.
     Returns a DataFrame with columns: period, param, win_rate, total_trades, score, etc.
@@ -534,8 +536,12 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["metric"], thresh)
+<<<<<<< HEAD
                 total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period, thresh)
+=======
+                res = _evaluate_signal(combined, fired, bil_returns, all_returns, period, thresh)
+>>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
     # --- 2. Indicator vs Indicator (RSI vs RSI, MA vs MA, MaxDD vs MaxDD, etc.) ---
@@ -563,8 +569,12 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["lhs_m"], combined["rhs_m"])
+<<<<<<< HEAD
                 total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period_l, period_r)
+=======
+                res = _evaluate_signal(combined, fired, bil_returns, all_returns, period_l, period_r)
+>>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
     # --- 3. Price vs Moving Average (1D Sweep on the RHS window) ---
@@ -590,8 +600,12 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
             if len(combined) < 20: continue
 
             fired = _apply_comparator(comp, combined["price"], combined["rhs_metric"])
+<<<<<<< HEAD
             total_fired += int(fired.sum())
             res = _evaluate_signal(combined, fired, bil_returns, primary_returns, window, window)
+=======
+            res = _evaluate_signal(combined, fired, bil_returns, all_returns, window, "win_rate")
+>>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
             if res: results.append(res)
 
     # --- 4. EMA vs MA cross (2D Sweep on both windows) ---
@@ -614,8 +628,12 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["ema"], combined["ma"])
+<<<<<<< HEAD
                 total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, ema_w, ma_w)
+=======
+                res = _evaluate_signal(combined, fired, bil_returns, all_returns, ema_w, ma_w)
+>>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
     else:
@@ -697,7 +715,7 @@ def df_to_heatmap_data(df, cond):
                     "n":  int(cell.iloc[0]["total_trades"]),
                     "s":  cell.iloc[0]["score"],
                     "pf": cell.iloc[0].get("profit_factor", 0),
-                    "pb": cell.iloc[0].get("primary_beat_rate", 0),
+                    "pb": cell.iloc[0].get("beat_rates", {}),
                 })
         matrix.append(row)
     return {
@@ -708,7 +726,152 @@ def df_to_heatmap_data(df, cond):
     }
 
 
-def generate_html(conditions, sweep_results, fragility_scores, config):
+# ---------------------------------------------------------------------------
+# Signal data builder (for JS-side equity curve + signal overlay charts)
+# ---------------------------------------------------------------------------
+
+def build_signal_data(conditions, config):
+    """
+    Builds pre-computed signal data for browser-side rendering.
+    Returns a dict with:
+      dates:   list of date strings (unified spine)
+      prices:  dict ticker -> list of close prices aligned to dates (forward-filled)
+      signals: dict "condId:alloc" -> {
+        price:     [price, ...] (endpoint price, forward-filled),
+        lhs_vals:  [val, ...] (lhs indicator at base params),
+        signal:    [bool, ...] (pre-computed signal mask),
+        strat_curve:  [float, ...] (strategy cumret, 100-based),
+        asset_curve:  [float, ...] (buy-hold cumret, 100-based),
+        bil_curve:    [float, ...] (BIL cumret, 100-based),
+        label: str (human-readable condition label)
+      }
+    """
+    import pandas as pd
+    import numpy as np
+
+    start = config["start_date"]
+    end = config["end_date"]
+
+    all_tickers = set()
+    for cond in conditions:
+        lhs = cond["lhs"]
+        rhs = cond["rhs"]
+        if lhs.get("ticker"):
+            all_tickers.add(lhs["ticker"].upper())
+        if rhs.get("type") == "indicator" and rhs.get("ticker"):
+            all_tickers.add(rhs["ticker"].upper())
+        for ep in cond.get("children_endpoints", []):
+            all_tickers.add(ep.upper())
+    all_tickers.add("BIL")
+
+    price_series = {}
+    for t in sorted(all_tickers):
+        try:
+            price_series[t] = load_price_series(t)
+        except (FileNotFoundError, Exception):
+            continue
+
+    date_set = set()
+    for t, s in price_series.items():
+        s_filt = s[(s.index >= start) & (s.index <= end)]
+        for dt in s_filt.index:
+            date_set.add(dt)
+    global_dates = sorted(date_set)
+    global_dates_str = [d.strftime("%Y-%m-%d") for d in global_dates]
+    dt_index = pd.DatetimeIndex(global_dates)
+
+    prices_fwd = {}
+    for t, s in price_series.items():
+        s_filt = s[(s.index >= start) & (s.index <= end)]
+        s_aligned = s_filt.reindex(dt_index).ffill()
+        prices_fwd[t] = [round(float(v), 4) if pd.notna(v) else None for v in s_aligned.values]
+
+    signals = {}
+    for cond in conditions:
+        allocs = cond.get("children_endpoints") or [None]
+        lhs = cond["lhs"]
+        rhs = cond["rhs"]
+        comp = cond.get("comparator", "gt")
+
+        for alloc in allocs:
+            key = f"{cond['id']}:{alloc if alloc is not None else '(none)'}"
+            ep_ticker = (alloc or "").upper()
+            lhs_ticker = (lhs.get("ticker") or "").upper()
+
+            price_l = prices_fwd.get(lhs_ticker, [None] * len(global_dates))
+            price_ep = prices_fwd.get(ep_ticker, [None] * len(global_dates))
+            price_bil = prices_fwd.get("BIL", [None] * len(global_dates))
+
+            ep_series = pd.Series(price_ep, dtype=float)
+            bil_series = pd.Series(price_bil, dtype=float)
+            ep_ret = ep_series.pct_change().fillna(0).values
+            bil_ret = bil_series.pct_change().fillna(0).values
+
+            lhs_series = pd.Series(price_l, dtype=float)
+            lhs_window = lhs.get("window")
+            if lhs_window and lhs["fn_label"]:
+                try:
+                    metric = compute_indicator(lhs_series, lhs["fn_label"], int(lhs_window))
+                except Exception:
+                    metric = pd.Series([np.nan] * len(global_dates))
+            else:
+                metric = ep_series
+
+            if rhs["type"] == "fixed":
+                rhs_val = float(rhs.get("value", 0))
+                fired = _apply_comparator(comp, metric, rhs_val)
+            else:
+                rhs_ticker = (rhs.get("ticker") or "").upper()
+                price_r = prices_fwd.get(rhs_ticker, [None] * len(global_dates))
+                rhs_series = pd.Series(price_r, dtype=float)
+                rhs_window = rhs.get("window")
+                if rhs_window and rhs["fn_label"]:
+                    try:
+                        rhs_metric = compute_indicator(rhs_series, rhs["fn_label"], int(rhs_window))
+                    except Exception:
+                        rhs_metric = pd.Series([np.nan] * len(global_dates))
+                else:
+                    rhs_metric = rhs_series
+                fired = _apply_comparator(comp, metric, rhs_metric)
+
+            signal_arr = fired.astype(bool).values.tolist()
+            lhs_vals_arr = [round(float(v), 4) if pd.notna(v) else None for v in metric.values]
+
+            strat = 100.0
+            asset = 100.0
+            bil_c = 100.0
+            strat_curve = [100.0]
+            asset_curve = [100.0]
+            bil_curve = [100.0]
+            for i in range(1, len(global_dates)):
+                sr = ep_ret[i] if signal_arr[i] else bil_ret[i]
+                strat *= (1 + sr)
+                asset *= (1 + ep_ret[i])
+                bil_c *= (1 + bil_ret[i])
+                strat_curve.append(round(strat, 4))
+                asset_curve.append(round(asset, 4))
+                bil_curve.append(round(bil_c, 4))
+
+            lhs_label = f"{lhs['fn_label']}({lhs_ticker}, {lhs_window})" if lhs_window else f"{lhs['fn_label']}({lhs_ticker})"
+            signals[key] = {
+                "price": [round(float(v), 4) if pd.notna(v) else None for v in ep_series.values],
+                "lhs_vals": lhs_vals_arr,
+                "signal": signal_arr,
+                "strat_curve": strat_curve,
+                "asset_curve": asset_curve,
+                "bil_curve": bil_curve,
+                "label": lhs_label,
+                "human": cond.get("human", ""),
+            }
+
+    return {
+        "dates": global_dates_str,
+        "prices": prices_fwd,
+        "signals": signals,
+    }
+
+
+def generate_html(conditions, sweep_results, fragility_scores, config, signal_data=None):
     """Generate the full HTML report by injecting data into the external template."""
     import json as jsonmod
 
@@ -742,6 +905,8 @@ def generate_html(conditions, sweep_results, fragility_scores, config):
             "sub_strategy": c["sub_strategy"],
             "depth":        c["depth"],
             "category":     c["category"],
+            "lhs":          c.get("lhs"),
+            "rhs":          c.get("rhs"),
             "allocations":  allocs,
             "alloc_errors": alloc_errors,
         })
@@ -765,6 +930,16 @@ def generate_html(conditions, sweep_results, fragility_scores, config):
     html = html.replace("__HEATMAP_JSON__", heatmap_json)
     html = html.replace("__FRAGILITY_JSON__", fragility_json)
     html = html.replace("__CONDITIONS_JSON__", conditions_json)
+
+    available_assets = config.get("available_assets", [primary_asset])
+    html = html.replace("__AVAILABLE_ASSETS__", jsonmod.dumps(available_assets))
+
+    # Inject signal data for JS-side equity curve + signal overlay charts
+    if signal_data is not None:
+        signal_json = jsonmod.dumps(signal_data)
+    else:
+        signal_json = jsonmod.dumps({"dates": [], "prices": {}, "returns": {}, "signals": {}})
+    html = html.replace("__SIGNAL_DATA__", signal_json)
 
     return html
 
@@ -811,9 +986,17 @@ def main():
     check_freshness_and_update(list(all_tickers), api_keys, DATA_DIR)
     print()
 
-    # Load BIL and primary returns once
-    bil_returns     = get_bil_daily_returns(config["start_date"], config["end_date"])
-    primary_returns = get_primary_daily_returns(config["primary_asset"], config["start_date"], config["end_date"])
+    # Load daily returns for all tickers (beat rates for every comparison asset)
+    print("  Loading daily returns for all tickers...")
+    all_returns = {}
+    for t in sorted(all_tickers):
+        try:
+            all_returns[t] = get_primary_daily_returns(t, config["start_date"], config["end_date"])
+        except (FileNotFoundError, Exception) as e:
+            print(f"    Warning: no return data for {t}, skipping: {e}")
+    bil_returns = all_returns.get("BIL")
+    if bil_returns is None:
+        bil_returns = get_bil_daily_returns(config["start_date"], config["end_date"])
 
     # Run sweeps — one per (condition × allocation)
     # sweep_results keyed by (cond_id, allocation_ticker)
@@ -834,7 +1017,7 @@ def main():
         worst_fragility = 0.0
         for alloc in allocs:
             key = (cond["id"], alloc)
-            df, err = sweep_condition(cond, config, bil_returns, primary_returns, endpoint=alloc)
+            df, err = sweep_condition(cond, config, bil_returns, all_returns, endpoint=alloc)
             if err:
                 print(f"    ⚠  {alloc}: {err}")
                 sweep_results[key] = err
@@ -846,9 +1029,14 @@ def main():
 
         fragility_scores[cond["id"]] = worst_fragility if allocs != [None] else 1.0
 
+    # Build signal data for JS-side charts
+    print("  Building signal data...")
+    signal_data = build_signal_data(conditions, config)
+
     # Generate HTML
+    config["available_assets"] = sorted(all_returns.keys())
     print("\n  Generating HTML report...")
-    html = generate_html(conditions, sweep_results, fragility_scores, config)
+    html = generate_html(conditions, sweep_results, fragility_scores, config, signal_data=signal_data)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_stem = Path(config["json_path"]).stem
