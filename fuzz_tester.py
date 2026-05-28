@@ -1,7 +1,7 @@
 """
 fuzz_tester.py
 ==============
-Reads a Composer/VOXPORT strategy JSON, extracts every IF condition,
+Reads a Composer strategy JSON, extracts every IF condition,
 and runs a 2D parameter sweep (period × threshold/window) for each one.
 
 For each parameter combination, measures win rate of the endpoint asset
@@ -510,6 +510,7 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         return None, f"No data for endpoint {endpoint}"
 
     results = []
+    total_fired = 0  # tracks whether condition ever fired across all sweep points
 
     # --- 1. RSI / CumRet / MaxDD / MAReturn vs Fixed Threshold ---
     if cat in ("RSI_fixed", "CumRet_fixed", "MaxDD_fixed", "MAReturn_fixed"):
@@ -533,6 +534,7 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["metric"], thresh)
+                total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period, thresh)
                 if res: results.append(res)
 
@@ -561,6 +563,7 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["lhs_m"], combined["rhs_m"])
+                total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period_l, period_r)
                 if res: results.append(res)
 
@@ -587,7 +590,8 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
             if len(combined) < 20: continue
 
             fired = _apply_comparator(comp, combined["price"], combined["rhs_metric"])
-            res = _evaluate_signal(combined, fired, bil_returns, primary_returns, window, "win_rate")
+            total_fired += int(fired.sum())
+            res = _evaluate_signal(combined, fired, bil_returns, primary_returns, window, window)
             if res: results.append(res)
 
     # --- 4. EMA vs MA cross (2D Sweep on both windows) ---
@@ -610,6 +614,7 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["ema"], combined["ma"])
+                total_fired += int(fired.sum())
                 res = _evaluate_signal(combined, fired, bil_returns, primary_returns, ema_w, ma_w)
                 if res: results.append(res)
 
@@ -617,7 +622,9 @@ def sweep_condition(cond, config, bil_returns, primary_returns, endpoint=None):
         return None, f"Unsupported category: {cat}"
 
     if not results:
-        return None, "No results generated (insufficient data)"
+        if total_fired == 0:
+            return None, "Condition never fired in date range"
+        return None, "No results generated (condition fired < 2 times per sweep point)"
 
     return pd.DataFrame(results), None
 
