@@ -9,8 +9,8 @@ vs BIL on days the condition fires. Outputs a self-contained HTML report
 with heatmaps and a logic-tree summary ranked by condition fragility.
 
 Usage:
-    python fuzz_tester.py
-    (prompts for all inputs interactively)
+    python fuzz_tester.py                              # interactive prompts
+    python fuzz_tester.py pathfinder/bestsignals3.json # non-interactive, all defaults
 """
 
 import json
@@ -70,6 +70,8 @@ FN_LABELS = {
     "moving-average-return":            "MAReturn",
     "exponential-moving-average-price": "EMA",
 }
+
+EXTRACTION_DEBUG = False
 
 COMPARATOR_LABELS = {
     "gt": ">", "lt": "<", "gte": ">=", "lte": "<=", "eq": "==", "neq": "!=",
@@ -164,7 +166,7 @@ def _extract_atomic_conditions(if_child):
     return [x for x in out if x.get("comparator")]
 
 
-def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strategy=None, results=None):
+def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strategy=None, results=None, _stats=None):
     """
     Recursively walks the strategy tree. For every IF node, extracts
     the condition with full context (depth, sub_strategy, endpoint path).
@@ -174,6 +176,15 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
         path_conditions = []
     if results is None:
         results = []
+    if _stats is None:
+        _stats = {"visited": 0, "extracted": 0, "skipped": {}}
+
+    _stats["visited"] += 1
+    if EXTRACTION_DEBUG:
+        node_id   = node.get("id", "?")
+        node_name = node.get("name")
+        node_step = node.get("step", "?")
+        print(f"[Extractor] step={node_step} id={node_id} name={node_name} outcome=visiting")
 
     step = node.get("step")
 
@@ -181,12 +192,12 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
         name = node.get("name")
         new_sub = name if name else sub_strategy
         for child in node.get("children", []):
-            extract_conditions_from_tree(child, depth, path_conditions, new_sub, results)
+            extract_conditions_from_tree(child, depth, path_conditions, new_sub, results, _stats=_stats)
         return results
 
     if step in ("root", "wt-cash-equal", "wt-cash-specified"):
         for child in node.get("children", []):
-            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results)
+            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results, _stats=_stats)
         return results
 
     if step == "asset":
@@ -225,11 +236,23 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
                     "path_so_far":       list(path_conditions),
                     "children_endpoints": [winner],
                 })
+                _stats["extracted"] += 1
+                if EXTRACTION_DEBUG:
+                    node_id   = node.get("id", "?")
+                    node_name = node.get("name")
+                    node_step = node.get("step", "?")
+                    print(f"[Extractor] step={node_step} id={node_id} name={node_name} outcome=extracted")
             return results
 
-        # Portfolio filter or unsupported sort — just walk children
+        # Portfolio filter or unsupported sort — log and walk children
+        skip_reason = f"portfolio filter (select-n={select_n})"
+        _stats["skipped"][skip_reason] = _stats["skipped"].get(skip_reason, 0) + 1
+        if EXTRACTION_DEBUG:
+            node_id   = node.get("id", "?")
+            node_name = node.get("name")
+            print(f"[Extractor] step=filter id={node_id} name={node_name} outcome=skipped: {skip_reason}")
         for child in node.get("children", []):
-            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results)
+            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results, _stats=_stats)
         return results
 
     if step == "if":
@@ -270,10 +293,16 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
                     "path_so_far":  list(path_conditions),
                     "children_endpoints": _collect_endpoints(pos),
                 })
+                _stats["extracted"] += 1
+                if EXTRACTION_DEBUG:
+                    node_id   = node.get("id", "?")
+                    node_name = node.get("name")
+                    node_step = node.get("step", "?")
+                    print(f"[Extractor] step={node_step} id={node_id} name={node_name} outcome=extracted")
 
                 new_path = path_conditions + [human]
                 for grandchild in pos.get("children", []):
-                    extract_conditions_from_tree(grandchild, depth + 1, new_path, sub_strategy, results)
+                    extract_conditions_from_tree(grandchild, depth + 1, new_path, sub_strategy, results, _stats=_stats)
 
                 if else_branches:
                     neg_label = COMPARATOR_NEGATIONS.get(comparator, "?")
@@ -281,12 +310,30 @@ def extract_conditions_from_tree(node, depth=0, path_conditions=None, sub_strate
                     new_path_neg = path_conditions + [neg_human]
                     for els in else_branches:
                         for grandchild in els.get("children", []):
-                            extract_conditions_from_tree(grandchild, depth + 1, new_path_neg, sub_strategy, results)
+                            extract_conditions_from_tree(grandchild, depth + 1, new_path_neg, sub_strategy, results, _stats=_stats)
 
     if step == "if-child":
         for child in node.get("children", []):
-            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results)
+            extract_conditions_from_tree(child, depth, path_conditions, sub_strategy, results, _stats=_stats)
 
+    return results
+
+
+def extract_conditions(node):
+    """
+    Public wrapper around extract_conditions_from_tree.
+    Always prints an extraction summary line, returns the conditions list.
+    """
+    _stats = {"visited": 0, "extracted": 0, "skipped": {}}
+    results = extract_conditions_from_tree(node, _stats=_stats)
+    skip_parts = ", ".join(
+        f"{reason}: {count}" for reason, count in _stats["skipped"].items()
+    ) or "none"
+    print(
+        f"[Extractor] Visited {_stats['visited']} nodes | "
+        f"Extracted {_stats['extracted']} conditions | "
+        f"Skipped: {skip_parts}"
+    )
     return results
 
 
@@ -347,27 +394,42 @@ def prompt(label, default=None, cast=str):
 def gather_inputs():
     print("\n=== Fuzz Tester Configuration ===\n")
 
-    json_path = prompt("Strategy JSON path", default="pathfinder/strategy.json")
-    json_path = Path(json_path)
-    if not json_path.exists():
-        print(f"  ERROR: File not found: {json_path}")
-        sys.exit(1)
+    non_interactive = len(sys.argv) > 1
+    if non_interactive:
+        json_path = Path(sys.argv[1])
+        if not json_path.exists():
+            print(f"  ERROR: File not found: {json_path}")
+            sys.exit(1)
+        print(f"  Strategy JSON path: {json_path}  (from command line)")
+        rsi_fuzz = ma_fuzz = cumret_fuzz = price_fuzz = maxdd_fuzz = 30.0
+        thresh_step = 0.5
+        period_step = 1
+        primary_asset = "TQQQ"
+        start_date = "2015-01-01"
+        end_date = "2026-03-15"
+        print("  Using all defaults.\n")
+    else:
+        json_path = prompt("Strategy JSON path", default="pathfinder/strategy.json")
+        json_path = Path(json_path)
+        if not json_path.exists():
+            print(f"  ERROR: File not found: {json_path}")
+            sys.exit(1)
 
-    print()
-    rsi_fuzz    = prompt("RSI fuzz range % (e.g. 30 = ±30% on period AND threshold)", default=30, cast=float)
-    ma_fuzz     = prompt("MA fuzz range %", default=30, cast=float)
-    cumret_fuzz = prompt("CumRet fuzz range %", default=30, cast=float)
-    price_fuzz  = prompt("Price/MA cross fuzz range % (window only)", default=30, cast=float)
-    maxdd_fuzz  = prompt("MaxDD fuzz range % (window and threshold)", default=30, cast=float)
+        print()
+        rsi_fuzz    = prompt("RSI fuzz range % (e.g. 30 = ±30% on period AND threshold)", default=30, cast=float)
+        ma_fuzz     = prompt("MA fuzz range %", default=30, cast=float)
+        cumret_fuzz = prompt("CumRet fuzz range %", default=30, cast=float)
+        price_fuzz  = prompt("Price/MA cross fuzz range % (window only)", default=30, cast=float)
+        maxdd_fuzz  = prompt("MaxDD fuzz range % (window and threshold)", default=30, cast=float)
 
-    print()
-    thresh_step = prompt("Threshold step size", default=0.5, cast=float)
-    period_step = prompt("Period step size (integer)", default=1, cast=int)
+        print()
+        thresh_step = prompt("Threshold step size", default=0.5, cast=float)
+        period_step = prompt("Period step size (integer)", default=1, cast=int)
 
-    print()
-    primary_asset = prompt("Primary strategy asset (benchmark for vs-primary stat)", default="TQQQ")
-    start_date    = prompt("Start date", default="2015-01-01")
-    end_date      = prompt("End date",   default="2026-03-15")
+        print()
+        primary_asset = prompt("Primary strategy asset (benchmark for vs-primary stat)", default="TQQQ")
+        start_date    = prompt("Start date", default="2015-01-01")
+        end_date      = prompt("End date",   default="2026-03-15")
 
     return {
         "json_path":      json_path,
@@ -512,8 +574,6 @@ def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
         return None, f"No data for endpoint {endpoint}"
 
     results = []
-    total_fired = 0  # tracks whether condition ever fired across all sweep points
-
     # --- 1. RSI / CumRet / MaxDD / MAReturn vs Fixed Threshold ---
     if cat in ("RSI_fixed", "CumRet_fixed", "MaxDD_fixed", "MAReturn_fixed"):
         base_period, base_thresh = lhs["window"], rhs["value"]
@@ -536,12 +596,7 @@ def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["metric"], thresh)
-<<<<<<< HEAD
-                total_fired += int(fired.sum())
-                res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period, thresh)
-=======
                 res = _evaluate_signal(combined, fired, bil_returns, all_returns, period, thresh)
->>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
     # --- 2. Indicator vs Indicator (RSI vs RSI, MA vs MA, MaxDD vs MaxDD, etc.) ---
@@ -569,16 +624,35 @@ def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["lhs_m"], combined["rhs_m"])
-<<<<<<< HEAD
-                total_fired += int(fired.sum())
-                res = _evaluate_signal(combined, fired, bil_returns, primary_returns, period_l, period_r)
-=======
                 res = _evaluate_signal(combined, fired, bil_returns, all_returns, period_l, period_r)
->>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
-    # --- 3. Price vs Moving Average (1D Sweep on the RHS window) ---
-    elif cat in ("Price_vs_MA", "Price_vs_EMA", "MA_fixed", "Price_fixed", "Price_vs_MAReturn"):
+    # --- 3. Price vs MAReturn (1D sweep on MAReturn window) ---
+    elif cat == "Price_vs_MAReturn":
+        rhs_ticker = rhs.get("ticker", lhs["ticker"])
+        base_window = rhs.get("window") or 200
+        f_val = fuzz.get("MAReturn", fuzz.get("MA", 0.3))
+        win_lo = max(2, round(base_window * (1 - f_val)))
+        win_hi = max(3, round(base_window * (1 + f_val)))
+        try:
+            price_series = load_price_series(lhs["ticker"])
+            rhs_price_series = load_price_series(rhs_ticker)
+        except FileNotFoundError as e:
+            return None, str(e)
+        windows = range(win_lo, win_hi + 1, max(1, config["period_step"]))
+        for window in windows:
+            rhs_vals = compute_indicator(rhs_price_series, "MAReturn", window)
+            combined = pd.DataFrame({"price": price_series, "rhs_metric": rhs_vals, "ep": ep_price}).dropna()
+            combined = combined[(combined.index >= start) & (combined.index <= end)]
+            if len(combined) < 20:
+                continue
+            fired = _apply_comparator(comp, combined["price"], combined["rhs_metric"])
+            res = _evaluate_signal(combined, fired, bil_returns, all_returns, window, "win_rate")
+            if res:
+                results.append(res)
+
+    # --- 4. Price vs Moving Average (1D Sweep on the RHS window) ---
+    elif cat in ("Price_vs_MA", "Price_vs_EMA", "MA_fixed", "Price_fixed"):
         rhs_fn = rhs.get("fn_label", "MA") if rhs["type"] == "indicator" else "MA"
         rhs_ticker = rhs.get("ticker", lhs["ticker"]) if rhs["type"] == "indicator" else lhs["ticker"]
         base_window = rhs.get("window") or lhs.get("window") or 200
@@ -600,15 +674,10 @@ def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
             if len(combined) < 20: continue
 
             fired = _apply_comparator(comp, combined["price"], combined["rhs_metric"])
-<<<<<<< HEAD
-            total_fired += int(fired.sum())
-            res = _evaluate_signal(combined, fired, bil_returns, primary_returns, window, window)
-=======
             res = _evaluate_signal(combined, fired, bil_returns, all_returns, window, "win_rate")
->>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
             if res: results.append(res)
 
-    # --- 4. EMA vs MA cross (2D Sweep on both windows) ---
+    # --- 5. EMA vs MA cross (2D Sweep on both windows) ---
     elif cat == "EMA_vs_MA":
         b_ema, b_ma = lhs.get("window") or 8, rhs.get("window") or 70
         f_val = fuzz.get("MA", 0.3)
@@ -628,21 +697,14 @@ def sweep_condition(cond, config, bil_returns, all_returns, endpoint=None):
                 if len(combined) < 20: continue
 
                 fired = _apply_comparator(comp, combined["ema"], combined["ma"])
-<<<<<<< HEAD
-                total_fired += int(fired.sum())
-                res = _evaluate_signal(combined, fired, bil_returns, primary_returns, ema_w, ma_w)
-=======
                 res = _evaluate_signal(combined, fired, bil_returns, all_returns, ema_w, ma_w)
->>>>>>> 2542fa55514ae4fffacc90ed94bf627a917969fb
                 if res: results.append(res)
 
     else:
         return None, f"Unsupported category: {cat}"
 
     if not results:
-        if total_fired == 0:
-            return None, "Condition never fired in date range"
-        return None, "No results generated (condition fired < 2 times per sweep point)"
+        return None, "Condition never fired in date range"
 
     return pd.DataFrame(results), None
 
@@ -661,6 +723,165 @@ def compute_fragility(df):
     cv = wr.std() / mean   # coefficient of variation
     # Normalize to 0–1 range (cv > 1 = very fragile)
     return round(min(cv, 1.0), 4)
+
+
+def compute_tail_metrics(fired_returns, bil_returns):
+    """
+    Compute tail dependency metrics for signal-day endpoint returns.
+    Higher tail_score means the condition's edge is driven by outlier days.
+    Returns a dict with 6 keys: tail_score, tail_concentration, excess_kurtosis,
+    base_win_rate, stripped_win_rate, wr_delta.
+    """
+    _zero = {"tail_score": 0.0, "tail_concentration": 0.0, "excess_kurtosis": 0.0,
+             "base_win_rate": 0.0, "stripped_win_rate": 0.0, "wr_delta": 0.0}
+    if fired_returns is None or len(fired_returns) < 5:
+        return _zero
+
+    bil_aligned = bil_returns.reindex(fired_returns.index, fill_value=0)
+    n = len(fired_returns)
+
+    # Base win rate vs BIL
+    base_wins = (fired_returns.values > bil_aligned.values).sum()
+    base_win_rate = base_wins / n
+
+    # Stripped win rate: remove top 5% days by absolute return magnitude
+    cutoff = fired_returns.abs().quantile(0.95)
+    keep = fired_returns.abs() < cutoff
+    stripped = fired_returns[keep]
+    bil_stripped = bil_aligned[keep]
+    if len(stripped) >= 5:
+        stripped_wins = (stripped.values > bil_stripped.values).sum()
+        stripped_win_rate = stripped_wins / len(stripped)
+    else:
+        stripped_win_rate = base_win_rate
+    wr_delta = max(base_win_rate - stripped_win_rate, 0.0)
+
+    # Tail concentration: fraction of total gains from top 5% gain days
+    gains = fired_returns[fired_returns > 0]
+    if len(gains) > 1 and gains.sum() > 0:
+        top_cutoff = gains.quantile(0.95)
+        tail_concentration = float(gains[gains >= top_cutoff].sum() / gains.sum())
+    else:
+        tail_concentration = 0.0
+
+    # Excess kurtosis (numpy — no scipy needed)
+    vals = fired_returns.values
+    if len(vals) >= 4:
+        mean, std = np.mean(vals), np.std(vals)
+        excess_kurtosis = float(np.mean(((vals - mean) / std) ** 4) - 3) if std > 0 else 0.0
+    else:
+        excess_kurtosis = 0.0
+
+    # Tail score: blend tail concentration and WR sensitivity to outlier removal
+    norm_wr_delta = min(wr_delta / 0.15, 1.0)  # 0.15 WR-point drop -> fully tail-driven
+    tail_score = round(min(0.5 * tail_concentration + 0.5 * norm_wr_delta, 1.0), 4)
+
+    return {
+        "tail_score":         tail_score,
+        "tail_concentration": round(float(tail_concentration), 4),
+        "excess_kurtosis":    round(float(excess_kurtosis), 4),
+        "base_win_rate":      round(float(base_win_rate), 4),
+        "stripped_win_rate":  round(float(stripped_win_rate), 4),
+        "wr_delta":           round(float(wr_delta), 4),
+    }
+
+
+def _get_base_fired_returns(cond, config, bil_returns, all_returns, endpoint):
+    """
+    Run signal generation for the base parameter cell only and return
+    the endpoint asset's daily returns on signal-fired days.
+    Used to compute tail metrics without modifying the sweep loop.
+    """
+    lhs, rhs, cat = cond["lhs"], cond["rhs"], cond["category"]
+    start, end = config["start_date"], config["end_date"]
+    comp = cond["comparator"]
+
+    if endpoint is None:
+        return None
+    try:
+        ep_price = load_price_series(endpoint)
+    except FileNotFoundError:
+        return None
+
+    fired_idx = None
+    combined = None
+
+    if cat in ("RSI_fixed", "CumRet_fixed", "MaxDD_fixed", "MAReturn_fixed"):
+        try:
+            price = load_price_series(lhs["ticker"])
+        except FileNotFoundError:
+            return None
+        metric_vals = compute_indicator(price, lhs["fn_label"], lhs["window"])
+        combined = pd.DataFrame({"metric": metric_vals, "ep": ep_price}).dropna()
+        combined = combined[(combined.index >= start) & (combined.index <= end)]
+        if len(combined) < 2:
+            return None
+        fired_idx = combined.index[_apply_comparator(comp, combined["metric"], rhs["value"])]
+
+    elif cat in ("RSI_vs_RSI", "CumRet_vs_CumRet", "MaxDD_vs_MaxDD", "MAReturn_vs_MAReturn",
+                 "MaxDD_vs_MAReturn", "MAReturn_vs_MaxDD", "MA_vs_MA", "EMA_vs_EMA"):
+        try:
+            price_l = load_price_series(lhs["ticker"])
+            price_r = load_price_series(rhs["ticker"])
+        except FileNotFoundError:
+            return None
+        metric_l = compute_indicator(price_l, lhs["fn_label"], lhs.get("window") or 10)
+        metric_r = compute_indicator(price_r, rhs["fn_label"], rhs.get("window") or 10)
+        combined = pd.DataFrame({"lhs_m": metric_l, "rhs_m": metric_r, "ep": ep_price}).dropna()
+        combined = combined[(combined.index >= start) & (combined.index <= end)]
+        if len(combined) < 2:
+            return None
+        fired_idx = combined.index[_apply_comparator(comp, combined["lhs_m"], combined["rhs_m"])]
+
+    elif cat == "Price_vs_MAReturn":
+        rhs_ticker = rhs.get("ticker", lhs["ticker"])
+        window = rhs.get("window") or 200
+        try:
+            price_series = load_price_series(lhs["ticker"])
+            rhs_price_series = load_price_series(rhs_ticker)
+        except FileNotFoundError:
+            return None
+        rhs_vals = compute_indicator(rhs_price_series, "MAReturn", window)
+        combined = pd.DataFrame({"price": price_series, "rhs_metric": rhs_vals, "ep": ep_price}).dropna()
+        combined = combined[(combined.index >= start) & (combined.index <= end)]
+        if len(combined) < 2:
+            return None
+        fired_idx = combined.index[_apply_comparator(comp, combined["price"], combined["rhs_metric"])]
+
+    elif cat in ("Price_vs_MA", "Price_vs_EMA", "MA_fixed", "Price_fixed"):
+        rhs_fn = rhs.get("fn_label", "MA") if rhs["type"] == "indicator" else "MA"
+        rhs_ticker = rhs.get("ticker", lhs["ticker"]) if rhs["type"] == "indicator" else lhs["ticker"]
+        window = rhs.get("window") or lhs.get("window") or 200
+        try:
+            price_series = load_price_series(lhs["ticker"])
+            rhs_price_series = load_price_series(rhs_ticker)
+        except FileNotFoundError:
+            return None
+        rhs_vals = compute_indicator(rhs_price_series, rhs_fn, window)
+        combined = pd.DataFrame({"price": price_series, "rhs_metric": rhs_vals, "ep": ep_price}).dropna()
+        combined = combined[(combined.index >= start) & (combined.index <= end)]
+        if len(combined) < 2:
+            return None
+        fired_idx = combined.index[_apply_comparator(comp, combined["price"], combined["rhs_metric"])]
+
+    elif cat == "EMA_vs_MA":
+        try:
+            price_series = load_price_series(lhs["ticker"])
+        except FileNotFoundError:
+            return None
+        ema_vals = compute_indicator(price_series, "EMA", lhs.get("window") or 8)
+        ma_vals = compute_indicator(price_series, "SMA", rhs.get("window") or 70)
+        combined = pd.DataFrame({"ema": ema_vals, "ma": ma_vals, "ep": ep_price}).dropna()
+        combined = combined[(combined.index >= start) & (combined.index <= end)]
+        if len(combined) < 2:
+            return None
+        fired_idx = combined.index[_apply_comparator(comp, combined["ema"], combined["ma"])]
+
+    else:
+        return None
+
+    ep_returns = combined["ep"].pct_change().shift(-1)
+    return ep_returns.loc[fired_idx].dropna()
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +951,14 @@ def df_to_heatmap_data(df, cond):
 # Signal data builder (for JS-side equity curve + signal overlay charts)
 # ---------------------------------------------------------------------------
 
+def _normalize_prices(prices):
+    """Rebase a price series so the first non-None value equals 100."""
+    first = next((v for v in prices if v is not None), None)
+    if not first:
+        return prices
+    return [round(v / first * 100, 4) if v is not None else None for v in prices]
+
+
 def build_signal_data(conditions, config):
     """
     Builds pre-computed signal data for browser-side rendering.
@@ -785,6 +1014,13 @@ def build_signal_data(conditions, config):
         s_filt = s[(s.index >= start) & (s.index <= end)]
         s_aligned = s_filt.reindex(dt_index).ffill()
         prices_fwd[t] = [round(float(v), 4) if pd.notna(v) else None for v in s_aligned.values]
+
+    returns_fwd = {}
+    for t, s in price_series.items():
+        s_filt = s[(s.index >= start) & (s.index <= end)]
+        s_aligned = s_filt.reindex(dt_index).ffill()
+        ret = s_aligned.pct_change().fillna(0)
+        returns_fwd[t] = [round(float(v), 6) for v in ret.values]
 
     signals = {}
     for cond in conditions:
@@ -862,16 +1098,29 @@ def build_signal_data(conditions, config):
                 "bil_curve": bil_curve,
                 "label": lhs_label,
                 "human": cond.get("human", ""),
+                "ep":   _normalize_prices(prices_fwd.get(ep_ticker, [None] * len(global_dates))),
+                "lhs":  prices_fwd.get(lhs_ticker, [None] * len(global_dates)),
+                "rhs":  prices_fwd.get((rhs.get("ticker") or "").upper(), [None] * len(global_dates)) if rhs["type"] == "indicator" else None,
+                "fn_l": lhs.get("fn_label") or None,
+                "fn_r": rhs.get("fn_label") if rhs["type"] == "indicator" else None,
+                "wl":   lhs.get("window"),
+                "wr":   rhs.get("window") if rhs["type"] == "indicator" else None,
+                "fv":   rhs.get("value") if rhs["type"] == "fixed" else None,
+                "cmp":  comp,
+                "bp":   lhs.get("window"),
+                "bp2":  rhs.get("window") if rhs["type"] == "indicator" else (rhs.get("value") if rhs["type"] == "fixed" else None),
+                "ep_t": ep_ticker,
             }
 
     return {
         "dates": global_dates_str,
         "prices": prices_fwd,
+        "returns": returns_fwd,
         "signals": signals,
     }
 
 
-def generate_html(conditions, sweep_results, fragility_scores, config, signal_data=None):
+def generate_html(conditions, sweep_results, reliability_scores, tail_detail, config, signal_data=None):
     """Generate the full HTML report by injecting data into the external template."""
     import json as jsonmod
 
@@ -911,9 +1160,10 @@ def generate_html(conditions, sweep_results, fragility_scores, config, signal_da
             "alloc_errors": alloc_errors,
         })
 
-    heatmap_json   = jsonmod.dumps(heatmap_data)
-    fragility_json = jsonmod.dumps({str(k): v for k, v in fragility_scores.items()})
-    conditions_json = jsonmod.dumps(conds_for_js)
+    heatmap_json      = jsonmod.dumps(heatmap_data)
+    reliability_json  = jsonmod.dumps({str(k): v for k, v in reliability_scores.items()})
+    tail_metrics_json = jsonmod.dumps({str(k): v for k, v in tail_detail.items()})
+    conditions_json   = jsonmod.dumps(conds_for_js)
 
     # Load the external HTML template
     template_path = SCRIPT_DIR / "report_template.html"
@@ -928,7 +1178,8 @@ def generate_html(conditions, sweep_results, fragility_scores, config, signal_da
     html = html.replace("__COND_COUNT__", str(len(conditions)))
     html = html.replace("__PRIMARY_ASSET__", primary_asset)
     html = html.replace("__HEATMAP_JSON__", heatmap_json)
-    html = html.replace("__FRAGILITY_JSON__", fragility_json)
+    html = html.replace("__RELIABILITY_JSON__", reliability_json)
+    html = html.replace("__TAIL_METRICS_JSON__", tail_metrics_json)
     html = html.replace("__CONDITIONS_JSON__", conditions_json)
 
     available_assets = config.get("available_assets", [primary_asset])
@@ -941,6 +1192,34 @@ def generate_html(conditions, sweep_results, fragility_scores, config, signal_da
         signal_json = jsonmod.dumps({"dates": [], "prices": {}, "returns": {}, "signals": {}})
     html = html.replace("__SIGNAL_DATA__", signal_json)
 
+    # Inject uPlot library (cache locally after first fetch)
+    uplot_cache = SCRIPT_DIR / "uplot.min.js"
+    if uplot_cache.exists():
+        uplot_js = uplot_cache.read_text(encoding="utf-8")
+    else:
+        import requests as _req
+        print("  Downloading uPlot library...")
+        resp = _req.get("https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js", timeout=30)
+        resp.raise_for_status()
+        uplot_js = resp.text
+        uplot_cache.write_text(uplot_js, encoding="utf-8")
+        print("  uPlot cached to uplot.min.js")
+    html = html.replace("__UPLOT_JS__", uplot_js)
+
+    # Inject uPlot CSS (required for .u-wrap position:relative and canvas sizing)
+    uplot_css_cache = SCRIPT_DIR / "uplot.min.css"
+    if uplot_css_cache.exists():
+        uplot_css = uplot_css_cache.read_text(encoding="utf-8")
+    else:
+        import requests as _req
+        print("  Downloading uPlot CSS...")
+        resp = _req.get("https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css", timeout=30)
+        resp.raise_for_status()
+        uplot_css = resp.text
+        uplot_css_cache.write_text(uplot_css, encoding="utf-8")
+        print("  uPlot CSS cached to uplot.min.css")
+    html = html.replace("__UPLOT_CSS__", uplot_css)
+
     return html
 
 
@@ -951,6 +1230,8 @@ def generate_html(conditions, sweep_results, fragility_scores, config, signal_da
 # ---------------------------------------------------------------------------
 
 def main():
+    _PRICE_CACHE.clear()
+
     config = gather_inputs()
 
     # Load API keys
@@ -962,7 +1243,7 @@ def main():
     with open(config["json_path"], "r", encoding="utf-8") as f:
         tree = json.load(f)
 
-    conditions = extract_conditions_from_tree(tree)
+    conditions = extract_conditions(tree)
     if not conditions:
         print("  ERROR: No IF conditions found in strategy JSON.")
         sys.exit(1)
@@ -1000,9 +1281,10 @@ def main():
 
     # Run sweeps — one per (condition × allocation)
     # sweep_results keyed by (cond_id, allocation_ticker)
-    # fragility_scores keyed by cond_id — worst fragility across allocations
-    sweep_results    = {}   # (cond_id, alloc) -> df or error string
-    fragility_scores = {}   # cond_id -> float
+    # reliability_scores keyed by cond_id — {fragility, tail_score, combined}
+    sweep_results      = {}   # (cond_id, alloc) -> df or error string
+    reliability_scores = {}   # cond_id -> {fragility, tail_score, combined}
+    tail_detail        = {}   # cond_id -> compute_tail_metrics result
 
     total = len(conditions)
     for i, cond in enumerate(conditions):
@@ -1025,9 +1307,17 @@ def main():
                 sweep_results[key] = df
                 fs = compute_fragility(df)
                 worst_fragility = max(worst_fragility, fs)
-                print(f"    → {alloc}: Fragility {fs:.3f} ({fragility_label(fs)})")
+                print(f"    -> {alloc}: Fragility {fs:.3f} ({fragility_label(fs)})")
 
-        fragility_scores[cond["id"]] = worst_fragility if allocs != [None] else 1.0
+        fragility = worst_fragility if allocs != [None] else 1.0
+
+        # Tail metrics from base parameter cell (first alloc)
+        base_fired = _get_base_fired_returns(cond, config, bil_returns, all_returns, allocs[0])
+        tm = compute_tail_metrics(base_fired, bil_returns)
+        tail_detail[cond["id"]] = tm
+        combined = round(0.6 * fragility + 0.4 * tm["tail_score"], 4)
+        reliability_scores[cond["id"]] = {"fragility": fragility, "tail_score": tm["tail_score"], "combined": combined}
+        print(f"    Tail: {tm['tail_score']:.3f} · Combined: {combined:.3f}")
 
     # Build signal data for JS-side charts
     print("  Building signal data...")
@@ -1036,7 +1326,7 @@ def main():
     # Generate HTML
     config["available_assets"] = sorted(all_returns.keys())
     print("\n  Generating HTML report...")
-    html = generate_html(conditions, sweep_results, fragility_scores, config, signal_data=signal_data)
+    html = generate_html(conditions, sweep_results, reliability_scores, tail_detail, config, signal_data=signal_data)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_stem = Path(config["json_path"]).stem

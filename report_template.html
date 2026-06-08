@@ -88,7 +88,8 @@
 
   /* Charts */
   .chart-section{margin-bottom:24px;}
-  .section-label{font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;}
+  .section-label{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;}
+  .section-label .axis-hint{font-size:9px;font-weight:400;color:var(--muted);margin-left:8px;text-transform:none;letter-spacing:0;}
   .heatmap-wrap{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:14px;overflow-x:auto;}
   .uplot-wrap {
   background: var(--surface);
@@ -152,7 +153,10 @@
   .signal-none{background:rgba(231,76,60,.12);border:1px solid rgba(231,76,60,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--red);margin-bottom:10px;}
   .signal-low{background:rgba(241,196,15,.12);border:1px solid rgba(241,196,15,.4);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--yellow);margin-bottom:10px;}
   .signal-ok{background:rgba(46,204,113,.1);border:1px solid rgba(46,204,113,.3);border-radius:5px;padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:var(--green);margin-bottom:10px;}
+
+  .u-tooltip{display:none;position:absolute;background:rgba(13,15,20,.93);border:1px solid #2a2f3e;border-radius:4px;padding:6px 9px;font-family:var(--font-mono);font-size:10px;color:#c8cfe0;pointer-events:none;z-index:50;white-space:nowrap;line-height:1.7;}
 </style>
+<style>__UPLOT_CSS__</style>
 <script>__UPLOT_JS__</script>
 </head>
 <body>
@@ -214,6 +218,13 @@
     <p><b>Heatmap (2D conditions):</b> rows = indicator period, columns = threshold value. Each cell's colour shows win rate: red = low, green = high. A healthy condition shows a broad green plateau. A spike of green surrounded by red is a warning sign.</p>
     <p style="margin-top:6px"><b>Line chart (1D conditions):</b> Used for MA crosses and RSI-vs-RSI where there's no threshold to sweep — only the window length varies. A flat line = robust. A sharp peak = fragile.</p>
 
+    <h3>Detail charts (click any condition to open)</h3>
+    <p>Clicking a condition or heatmap cell loads four charts in the right panel. Each reflects the <em>currently selected</em> parameter values — clicking a different cell re-renders them for that cell's period and threshold.</p>
+    <div class="metric"><div class="metric-name">Equity Curves</div><div class="metric-desc">Strategy (green), Buy-and-Hold (blue), and BIL (grey dashed) all indexed to 100 at the start of the data. Green shaded bands mark days the signal was ON. Ideally the strategy line rises during ON bands and stays flat or tracks BIL during OFF periods.</div></div>
+    <div class="metric"><div class="metric-name">Price &amp; Signal Overlay</div><div class="metric-desc">The allocated asset's price, normalized to 100 at the start of the data. Green dots mark individual signal-ON days; green bands span continuous ON periods. Use this to see <em>what the market was doing</em> when the condition fired — are the triggers clustered in obvious trends, or scattered randomly?</div></div>
+    <div class="metric"><div class="metric-name">Indicator Values</div><div class="metric-desc">The raw indicator value (e.g. RSI, cumulative return, moving average) plotted over time. A horizontal red dashed line shows the threshold if the condition compares against a fixed value. Green bands again show signal-ON periods. Use this to verify the indicator is actually crossing the threshold when you expect it to.</div></div>
+    <div class="metric"><div class="metric-name">Profile</div><div class="metric-desc">Win rate (green, left axis) and profit factor (blue dashed, right axis) across the parameter sweep for the selected period. The orange dashed line marks the base parameter value from your strategy. A wide, flat plateau around the orange line means the condition is robust — the exact value doesn't matter much. A sharp spike directly on the orange line is a red flag for overfitting.</div></div>
+
     <h3>Allocation tabs</h3>
     <p>When a condition gates multiple possible holdings, each gets its own tab. The sweep for each tab measures whether <em>that specific asset</em> outperforms BIL on days the condition fired.</p>
 
@@ -231,6 +242,24 @@
     <div class="metric"><div class="metric-name" style="color:#e74c3c">Fragile</div><div class="metric-desc">Win rate spikes sharply at the fitted value. Consider widening the parameter or removing the condition.</div></div>
     <div class="metric"><div class="metric-name" style="color:#8e44ad">Very Fragile</div><div class="metric-desc">The condition appears heavily overfit. Treat with scepticism.</div></div>
 
+    <h3>Tail score (sidebar "T:" badge)</h3>
+    <p>The tail score answers a different question from fragility: <em>even at the base parameters, does this condition's edge come from a handful of extreme return days — or from consistent outperformance?</em> A high tail score means the win rate collapses if you strip out the best few days, which is a sign the condition is luck-dependent rather than structural.</p>
+    <div class="metric"><div class="metric-name" style="color:#2ecc71">T: Robust (0–0.30)</div><div class="metric-desc">Edge is spread across many ordinary days. The condition holds up even after removing outliers.</div></div>
+    <div class="metric"><div class="metric-name" style="color:#f1c40f">T: Moderate (0.30–0.55)</div><div class="metric-desc">Some tail dependency. A few big days contribute disproportionately, but the edge is not entirely concentrated.</div></div>
+    <div class="metric"><div class="metric-name" style="color:#e74c3c">T: Tail-driven (0.55+)</div><div class="metric-desc">The edge is heavily concentrated in outlier days. Strip out the top 5% of returns and the win rate drops sharply — treat with caution.</div></div>
+
+    <h3>Combined score and sidebar ranking</h3>
+    <p>Conditions are ranked within each sub-strategy by <b>Combined = 0.6 × Fragility + 0.4 × Tail Score</b>. The most problematic conditions appear first. A condition can rank high because it is parameter-sensitive (high fragility), tail-dependent (high tail score), or both.</p>
+
+    <h3>Tail Analysis panel (pin a cell to open)</h3>
+    <p>Clicking a cell in the heatmap pins it and opens the Tail Analysis panel in the right column. All values reflect the <em>base parameter point</em> from your strategy, not the specific cell you clicked.</p>
+    <div class="metric"><div class="metric-name">Tail Score</div><div class="metric-desc">Combined measure of how concentrated the edge is in outlier days (0 = fully distributed, 1 = entirely tail-driven).</div></div>
+    <div class="metric"><div class="metric-name">Tail Concentration</div><div class="metric-desc">Fraction of total outperformance that comes from just the top 5% of return days. 0.5 means half the edge comes from the best 5% of days.</div></div>
+    <div class="metric"><div class="metric-name">Return Kurtosis</div><div class="metric-desc">Excess kurtosis of the signal-day returns. High kurtosis (>3) means the return distribution has heavy tails — a few very large or very small days dominate.</div></div>
+    <div class="metric"><div class="metric-name">Win Rate (base)</div><div class="metric-desc">% of signal days where the allocated asset beat BIL, at the strategy's fitted parameter values.</div></div>
+    <div class="metric"><div class="metric-name">Win Rate (stripped)</div><div class="metric-desc">Same win rate after removing the top 5% of return days. If this drops sharply from the base win rate, the edge depends on catching occasional big moves.</div></div>
+    <div class="metric"><div class="metric-name">WR Delta</div><div class="metric-desc">Base win rate minus stripped win rate. &gt;10 percentage points is a significant tail dependency; &gt;20 pp is a red flag.</div></div>
+
     <h3>Comparing cells</h3>
     <p>Click any cell to pin it (blue border). Click a second cell to pin it (yellow border). The right panel shows both sets of stats plus a Δ row showing the difference.</p>
   </div>
@@ -238,7 +267,8 @@
 
 <script>
 const HEATMAP_DATA     = __HEATMAP_JSON__;
-const FRAGILITY        = __FRAGILITY_JSON__;
+const RELIABILITY      = __RELIABILITY_JSON__;
+const TAIL_METRICS     = __TAIL_METRICS_JSON__;
 const CONDITIONS       = __CONDITIONS_JSON__;
 const PRIMARY_ASSET    = "__PRIMARY_ASSET__";
 const AVAILABLE_ASSETS = __AVAILABLE_ASSETS__;
@@ -385,7 +415,11 @@ function computeSignal(key, period, param) {
 function buildEquityCurve(key, sig) {
   const sd = SIGNAL_DATA.signals[key];
   if (!sd) return null;
+  if (sd.strat_curve && sd.asset_curve && sd.bil_curve) {
+    return { strat: sd.strat_curve, bh: sd.asset_curve, bil: sd.bil_curve };
+  }
   const returns = SIGNAL_DATA.returns;
+  if (!returns) return null;
   const epRet = returns[sd.ep_t];
   const bilRet = returns.BIL;
   if (!epRet || !bilRet) return null;
@@ -448,10 +482,15 @@ Object.entries(groups).forEach(([sub, conds]) => {
     header.addEventListener('click', () => {
       const open = body.classList.toggle('open');
       header.classList.toggle('open', open);
-      // Lazy render nodes only on first open
+      // Lazy render nodes only on first open, sorted by combined score descending
       if(open && !rendered) {
         rendered = true;
-        conds.forEach(c => body.appendChild(makeNode(c)));
+        const sorted = [...conds].sort((a,b) => {
+          const ca = (RELIABILITY[a.id]||{}).combined ?? 1.0;
+          const cb = (RELIABILITY[b.id]||{}).combined ?? 1.0;
+          return cb - ca;
+        });
+        sorted.forEach(c => body.appendChild(makeNode(c)));
       }
     });
 
@@ -461,8 +500,11 @@ Object.entries(groups).forEach(([sub, conds]) => {
 }
 
 function makeNode(c) {
-  const fs = parseFloat(FRAGILITY[c.id] ?? 1.0);
-  const color = fragColor(fs);
+  const rel = RELIABILITY[c.id] || {};
+  const fs = parseFloat(rel.fragility ?? 1.0);
+  const ts = parseFloat(rel.tail_score ?? 0.0);
+  const fColor = fragColor(fs);
+  const tColor = fragColor(ts);
   const node = document.createElement('div');
   node.className = 'tree-node';
   node.dataset.id = c.id;
@@ -472,7 +514,7 @@ function makeNode(c) {
     sp.className='tree-indent'; sp.textContent='·'; node.appendChild(sp);
   }
   const dot=document.createElement('div');
-  dot.className='tree-dot'; dot.style.background=color; node.appendChild(dot);
+  dot.className='tree-dot'; dot.style.background=fColor; node.appendChild(dot);
   const lbl=document.createElement('div');
   lbl.className='tree-label';
   lbl.title=c.human;
@@ -480,8 +522,13 @@ function makeNode(c) {
   node.appendChild(lbl);
   const badge=document.createElement('div');
   badge.className='tree-badge';
-  badge.style.cssText=`background:${color}22;color:${color}`;
+  badge.style.cssText=`background:${fColor}22;color:${fColor}`;
   badge.textContent=fragLabel(fs); node.appendChild(badge);
+  const tbadge=document.createElement('div');
+  tbadge.className='tree-badge';
+  tbadge.style.cssText=`background:${tColor}22;color:${tColor};margin-left:3px`;
+  tbadge.title='Tail dependency score';
+  tbadge.textContent='T:'+fragLabel(ts); node.appendChild(tbadge);
   node.addEventListener('click', ()=>showCondition(c.id));
   return node;
 }
@@ -493,7 +540,9 @@ function showCondition(id) {
   if(an) an.classList.add('active');
 
   const cond  = CONDITIONS.find(c=>c.id===id);
-  const fs    = parseFloat(FRAGILITY[id]??1.0);
+  const rel   = RELIABILITY[id] || {};
+  const fs    = parseFloat(rel.fragility ?? 1.0);
+  const ts    = parseFloat(rel.tail_score ?? 0.0);
   const color = fragColor(fs);
   const allocs= cond.allocations||[];
   currentCondId = id;
@@ -514,6 +563,7 @@ function showCondition(id) {
     <div class="cond-panel visible" id="panel-${id}">
       <div class="cond-header">
         <div class="cond-badge" style="background:${color}22;color:${color}">${fragLabel(fs)} (${(fs*100).toFixed(0)}%)</div>
+        <div class="cond-badge" style="background:${fragColor(ts)}22;color:${fragColor(ts)};margin-left:6px">Tail: ${fragLabel(ts)}</div>
         <div>
           <div class="cond-title">${cond.human}</div>
           <div class="cond-meta">${cond.sub_strategy} · ${cond.category} · allocates to: ${allocs.join(', ')||'—'}</div>
@@ -582,10 +632,10 @@ function renderChartsForAlloc(condId, alloc, cond) {
 
   area.insertAdjacentHTML('beforeend', `
     ${warnHtml}
-    <div class="chart-section"><div class="section-label">Equity Curves</div><div class="uplot-wrap"><div id="eq-c"></div></div></div>
-    <div class="chart-section"><div class="section-label">Price &amp; Signal Overlay</div><div class="uplot-wrap"><div id="so-c"></div></div></div>
-    <div class="chart-section"><div class="section-label">Indicator Values</div><div class="uplot-wrap"><div id="ind-c"></div></div></div>
-    <div class="chart-section"><div class="section-label">Profile</div><div class="uplot-wrap"><div id="profile-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Equity Curves<span class="axis-hint">y: indexed to 100</span></div><div class="uplot-wrap"><div id="eq-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Price &amp; Signal Overlay<span class="axis-hint">y: price normalized to 100</span></div><div class="uplot-wrap"><div id="so-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Indicator Values<span class="axis-hint">y: indicator value · threshold</span></div><div class="uplot-wrap"><div id="ind-c"></div></div></div>
+    <div class="chart-section"><div class="section-label">Profile<span class="axis-hint">y: win rate (left) · profit factor (right)</span></div><div class="uplot-wrap"><div id="profile-c"></div></div></div>
   `);
 
   renderEquityCurve('eq-c', key, sd.bp, sd.bp2);
@@ -619,6 +669,19 @@ function renderInfo() {
   } else if(pinnedA && !pinnedB) {
     html=slotHtml(pinnedA,'Pinned','#4f8ef7');
     if(hoveredCell){ html+='<div class="info-divider"></div>'+slotHtml(hoveredCell,'Hover','#888'); }
+    const tm=TAIL_METRICS[currentCondId];
+    if(tm){
+      const tc=fragColor(tm.tail_score);
+      html+=`<div class="info-divider"></div><div class="info-slot">
+        <div class="info-slot-header" style="color:${tc}">Tail Analysis <span style="font-size:9px;opacity:.7">(base params)</span></div>
+        <div class="info-stat"><span class="info-stat-label">Tail Score</span><span class="info-stat-value" style="color:${tc}">${(tm.tail_score*100).toFixed(0)}%</span></div>
+        <div class="info-stat"><span class="info-stat-label">Tail Concentration</span><span class="info-stat-value">${(tm.tail_concentration*100).toFixed(0)}%</span></div>
+        <div class="info-stat"><span class="info-stat-label">Excess Kurtosis</span><span class="info-stat-value">${tm.excess_kurtosis.toFixed(2)}</span></div>
+        <div class="info-stat"><span class="info-stat-label">Win Rate (base)</span><span class="info-stat-value" style="color:${wrColor(tm.base_win_rate)}">${pct(tm.base_win_rate)}</span></div>
+        <div class="info-stat"><span class="info-stat-label">Win Rate (ex-outliers)</span><span class="info-stat-value" style="color:${wrColor(tm.stripped_win_rate)}">${pct(tm.stripped_win_rate)}</span></div>
+        <div class="info-stat"><span class="info-stat-label">WR Delta</span><span class="info-stat-value" style="color:${tm.wr_delta>0.05?'#e74c3c':'#2ecc71'}">${tm.wr_delta>=0?'+':''}${pct(tm.wr_delta)}</span></div>
+      </div>`;
+    }
   } else if(pinnedA && pinnedB) {
     html=slotHtml(pinnedA,'A','#4f8ef7')+'<div class="info-divider"></div>'+slotHtml(pinnedB,'B','#f1c40f');
     const dw=pinnedB.cell.wr-pinnedA.cell.wr, dp=pinnedB.cell.pf-pinnedA.cell.pf, db=pbVal(pinnedB.cell)-pbVal(pinnedA.cell);
@@ -743,7 +806,7 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
   }:null).filter(Boolean);
   if(!pts.length) return;
 
-  const W=520,H=170,PAD={t:12,r:14,b:30,l:42};
+  const W=container.clientWidth||520,H=170,PAD={t:12,r:14,b:30,l:42};
   const cW=W-PAD.l-PAD.r, cH=H-PAD.t-PAD.b;
   const xs=pts.map(p=>p.x), vs=pts.map(p=>p.v);
   const xMin=Math.min(...xs),xMax=Math.max(...xs);
@@ -803,6 +866,30 @@ function renderLine(cid, hd, metric, colorFn, fmtFn) {
   });
 }
 
+// ── Tooltip helper ─────────────────────────────────────────────────────────
+// Attaches a mousemove-based tooltip to a uPlot instance after construction.
+// Positions relative to .u-wrap so axis width doesn't offset the tip.
+function makeTooltip(u, getLines) {
+  const tip = document.createElement('div');
+  tip.className = 'u-tooltip';
+  tip.style.position = 'fixed';
+  u.root.appendChild(tip);
+  const over = u.root.querySelector('.u-over');
+  if (!over) return;
+  over.addEventListener('mousemove', e => {
+    const idx = u.posToIdx(e.offsetX);
+    if (idx == null || idx < 0 || idx >= u.data[0].length) { tip.style.display = 'none'; return; }
+    const lines = getLines(idx);
+    if (!lines || !lines.length) { tip.style.display = 'none'; return; }
+    tip.innerHTML = lines.join('<br>');
+    tip.style.display = 'block';
+    const tipW = tip.offsetWidth + 14;
+    tip.style.left = (e.clientX + tipW > window.innerWidth ? e.clientX - tipW : e.clientX + 10) + 'px';
+    tip.style.top = (e.clientY - 12) + 'px';
+  });
+  over.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+}
+
 // ── uPlot: Equity Curve (log scale, signal bands via drawClear) ────────────
 // ── uPlot: Equity Curve (log scale, signal bands via drawClear) ────────────
 function renderEquityCurve(cid, key, period, param) {
@@ -826,27 +913,40 @@ function renderEquityCurve(cid, key, period, param) {
 
   const cWidth = container.clientWidth || chartOpts.width;
 
+  const eqGetLines = idx => {
+    const d = new Date(data[0][idx] * 1000).toISOString().slice(0, 10);
+    const s = data[1][idx], b = data[2][idx], bl = data[3][idx];
+    const onOff = sig[idx] ? '<span style="color:#2ecc71">● ON</span>' : '<span style="color:#5a6180">○ OFF</span>';
+    return [
+      d,
+      `<span style="color:#2ecc71">Strategy</span>: ${s != null ? s.toFixed(1) : '—'}`,
+      `<span style="color:#4f8ef7">Buy-Hold</span>: ${b != null ? b.toFixed(1) : '—'}`,
+      `<span style="color:#5a6180">BIL</span>: ${bl != null ? bl.toFixed(1) : '—'}`,
+      `Signal: ${onOff}`,
+    ];
+  };
+
   plotInstances[cid + '-eq'] = new uPlot({
     width: cWidth,
     height: chartOpts.height,
-    cursor: { show: false },
+    cursor: { show: true, drag: { x: false, y: false } },
     select: { show: false },
     legend: { show: false },
     scales: {
       x: { time: true },
-      y: { distr: 2, log: 10 }, // log scale
+      y: {},
     },
     axes: [
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => {
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 24, values: (self, ticks) => ticks.map(t => {
         const d = new Date(t * 1000);
         return d.toISOString().slice(0, 7);
       })},
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 40 },
     ],
     series: [
       {},
-      { label: 'Strategy', stroke: CHART_THEME.green, width: 2, fill: 'rgba(46,204,113,0.05)' },
-      { label: 'Buy-Hold', stroke: CHART_THEME.blue, width: 2, fill: 'rgba(79,142,247,0.05)' },
+      { label: 'Strategy', stroke: CHART_THEME.green, width: 2 },
+      { label: 'Buy-Hold', stroke: CHART_THEME.blue, width: 2 },
       { label: 'BIL', stroke: CHART_THEME.grey, width: 1, dashes: [4, 4] },
     ],
     hooks: {
@@ -878,6 +978,7 @@ function renderEquityCurve(cid, key, period, param) {
   }, data, container);
 
   plotInstances[cid + '-eq']._h = chartOpts.height;
+  makeTooltip(plotInstances[cid + '-eq'], eqGetLines);
 }
 
 // ── uPlot: Signal Overlay ───────────────────────────────────────────────────
@@ -901,17 +1002,27 @@ function renderSignalOverlay(cid, key, period, param) {
 
   const cWidth = container.clientWidth || chartOpts.width;
 
+  const soGetLines = idx => {
+    const d = new Date(tss[idx] * 1000).toISOString().slice(0, 10);
+    const price = priceData[idx];
+    const onOff = sig[idx] ? '<span style="color:#2ecc71">● ON</span>' : '<span style="color:#5a6180">○ OFF</span>';
+    return [
+      d,
+      `Price: ${price != null ? price.toFixed(2) : '—'}`,
+      `Signal: ${onOff}`,
+    ];
+  };
+
   plotInstances[cid + '-so'] = new uPlot({
     width: cWidth,
     height: 170,
-    tzDate: d => d,
-    cursor: { show: false },
+    cursor: { show: true, drag: { x: false, y: false } },
     select: { show: false },
     legend: { show: false },
     scales: { x: { time: true }, y: { auto: true } },
     axes: [
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 24, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 40 },
     ],
     series: [
       {},
@@ -947,6 +1058,7 @@ function renderSignalOverlay(cid, key, period, param) {
   }, [tss, priceData, dotData], container);
 
   plotInstances[cid + '-so']._h = 170;
+  makeTooltip(plotInstances[cid + '-so'], soGetLines);
 }
 
 // ── uPlot: Indicator Chart ──────────────────────────────────────────────────
@@ -985,17 +1097,29 @@ function renderIndicatorChart(cid, key, period, param, cond) {
 
   const cWidth = container.clientWidth || chartOpts.width;
 
+  const indGetLines = idx => {
+    const d = new Date(tss[idx] * 1000).toISOString().slice(0, 10);
+    const iv = indData[idx];
+    const lines = [
+      d,
+      `<span style="color:#4f8ef7">${sd.fn_l || 'Indicator'}</span>: ${iv != null ? iv.toFixed(2) : '—'}`,
+    ];
+    if (threshData) lines.push(`<span style="color:#e74c3c">Threshold</span>: ${threshVal.toFixed(2)}`);
+    const onOff = sig[idx] ? '<span style="color:#2ecc71">● ON</span>' : '<span style="color:#5a6180">○ OFF</span>';
+    lines.push(`Signal: ${onOff}`);
+    return lines;
+  };
+
   plotInstances[cid + '-ind'] = new uPlot({
     width: cWidth,
     height: 170,
-    tzDate: d => d,
-    cursor: { show: false },
+    cursor: { show: true, drag: { x: false, y: false } },
     select: { show: false },
     legend: { show: false },
     scales: { x: { time: true }, y: { auto: true } },
     axes: [
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
-      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 50 },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 24, values: (self, ticks) => ticks.map(t => new Date(t * 1000).toISOString().slice(0, 7)) },
+      { stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 40 },
     ],
     series,
     hooks: {
@@ -1027,6 +1151,7 @@ function renderIndicatorChart(cid, key, period, param, cond) {
   }, threshData ? [tss, indData, threshData] : [tss, indData], container);
 
   plotInstances[cid + '-ind']._h = 170;
+  makeTooltip(plotInstances[cid + '-ind'], indGetLines);
 }
 
 function renderProfileLine(cid, label, xs, wrs, pfs, markerX) {
@@ -1037,19 +1162,33 @@ function renderProfileLine(cid, label, xs, wrs, pfs, markerX) {
   const container = document.getElementById(cid);
   const cWidth = container.clientWidth || (chartOpts.width - 40);
 
+  const profGetLines = idx => {
+    const x = data[0][idx];
+    const wr = data[1][idx];
+    const pf = data[2][idx];
+    const isBase = marker && Math.abs(x - parseFloat(markerX)) < 0.001;
+    const lines = [
+      `${label}: ${x}`,
+      `<span style="color:#2ecc71">Win Rate</span>: ${wr != null ? (wr * 100).toFixed(1) + '%' : '—'}`,
+      `<span style="color:#4f8ef7">Profit Factor</span>: ${pf != null ? pf.toFixed(2) : '—'}`,
+    ];
+    if (isBase) lines.push('<span style="color:#e67e22">▶ base param</span>');
+    return lines;
+  };
+
   plotInstances[cid] = new uPlot({
     width: cWidth,
     height: 170,
-    cursor: { show: false },
+    cursor: { show: true, drag: { x: false, y: false } },
     select: { show: false },
     legend: { show: false },
     scales: {
       x: { time: false },
-      y: { range: [0, 1] },
-      'y2': { range: [0, null], ori: 1 },
+      y: { range: (u, min, max) => [Math.max(0, min - 0.03), Math.min(1, max + 0.03)] },
+      'y2': { range: (u, min, max) => [Math.min(min * 0.9, 0.5), max * 1.1], ori: 1 },
     },
     axes: [
-      { scale: 'x', stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 40 },
+      { scale: 'x', stroke: CHART_THEME.muted, grid: { stroke: CHART_THEME.grid, width: 1 }, ticks: { show: false }, font: '9px IBM Plex Mono,monospace', size: 24 },
       { scale: 'y', side: 3, stroke: CHART_THEME.green, grid: { show: false }, ticks: { show: false }, font: '8px IBM Plex Mono,monospace', size: 35, values: (_, ticks) => ticks.map(v => (v * 100).toFixed(0) + '%') },
       { scale: 'y2', side: 1, stroke: CHART_THEME.blue, grid: { show: false }, ticks: { show: false }, font: '8px IBM Plex Mono,monospace', size: 35 },
     ],
@@ -1082,6 +1221,34 @@ function renderProfileLine(cid, label, xs, wrs, pfs, markerX) {
   }, data, container);
 
   plotInstances[cid]._h = 170;
+  makeTooltip(plotInstances[cid], profGetLines);
+}
+
+function renderProfileCharts(cid, key, hd, period, param) {
+  destroyPlot(cid);
+  const container = document.getElementById(cid);
+  if (!container || !hd) return;
+  container.innerHTML = '';
+
+  if (hd.is_1d) {
+    const validXs = [], wrs = [], pfs = [];
+    hd.periods.forEach((p, i) => {
+      const cell = hd.matrix[i][0];
+      if (cell) { validXs.push(Number(p)); wrs.push(cell.wr); pfs.push(cell.pf); }
+    });
+    renderProfileLine(cid, 'Profile', validXs, wrs, pfs, period);
+    return;
+  }
+
+  const rIdx = hd.periods.indexOf(String(period));
+  if (rIdx >= 0) {
+    const row = hd.matrix[rIdx];
+    const xs = [], wrs = [], pfs = [];
+    row.forEach((cell, ci) => {
+      if (cell) { xs.push(Number(hd.params[ci])); wrs.push(cell.wr); pfs.push(cell.pf); }
+    });
+    if (xs.length >= 2) renderProfileLine(cid, 'Threshold Profile', xs, wrs, pfs, param);
+  }
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
