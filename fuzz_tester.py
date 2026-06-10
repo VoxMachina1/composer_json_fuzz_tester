@@ -498,10 +498,6 @@ def get_primary_daily_returns(ticker, start_date, end_date):
 # Single condition sweep
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Single condition sweep
-# ---------------------------------------------------------------------------
-
 def _apply_comparator(comp, lhs_vals, rhs_vals):
     """Helper to apply the string comparator to pandas Series or scalars."""
     if comp == "gt":   return lhs_vals > rhs_vals
