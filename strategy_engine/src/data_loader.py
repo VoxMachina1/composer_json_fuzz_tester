@@ -39,10 +39,14 @@ def download_ticker_data(ticker, api_keys, data_dir):
     """
     Downloads the FULL historical daily data for a ticker, rotating API keys on failure.
     """
+    # Tiingo encodes share-class tickers with a hyphen (e.g. BRK/B -> BRK-B).
+    # The sanitized symbol must go in the URL; the raw ticker lets the '/' split
+    # the URL path so Tiingo returns 404.
     safe_ticker = ticker.replace("/", "-").replace(".", "-")
-    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+    url = f"https://api.tiingo.com/tiingo/daily/{safe_ticker}/prices"
     success = False
     data = None
+    last_status = None
 
     for key in api_keys:
         headers = {'Content-Type': 'application/json', 'Authorization': f'Token {key}'}
@@ -61,17 +65,30 @@ def download_ticker_data(ticker, api_keys, data_dir):
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 2, 16.0)
 
-        if response is not None and response.status_code == 200:
+        last_status = response.status_code if response is not None else None
+
+        if last_status == 200:
             data = response.json()
             success = True
             break
-        else:
-            status = response.status_code if response is not None else "no-response"
-            print(f"[{ticker}] Key failed. Status: {status}. Rotating...")
-            continue
+
+        # A 404 means Tiingo does not recognize the symbol itself. Rotating keys
+        # cannot fix that, so fail fast with a clear message instead of burning
+        # every key and reporting a misleading "keys exhausted" error.
+        if last_status == 404:
+            raise Exception(
+                f"[{ticker}] Tiingo returned 404 for symbol '{safe_ticker}'. "
+                f"The ticker is unsupported or misspelled; rotating keys will not help."
+            )
+
+        print(f"[{ticker}] Key failed. Status: {last_status}. Rotating...")
+        continue
 
     if not success or not data:
-        raise Exception(f"[{ticker}] Failed to download data. API keys exhausted.")
+        raise Exception(
+            f"[{ticker}] Failed to download data after trying {len(api_keys)} key(s). "
+            f"Last HTTP status: {last_status}."
+        )
 
     df = pd.DataFrame(data)
     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
@@ -92,6 +109,7 @@ def check_freshness_and_update(tickers, api_keys, data_dir):
     latest_market_date = get_latest_tiingo_date(api_keys)
     print(f"Latest US trading day on Tiingo: {latest_market_date}")
 
+    download_count = 0
     for ticker in tickers:
         safe_ticker = ticker.replace('/', '-').replace('.', '-')
         file_path = data_dir / f"{safe_ticker}.csv"
@@ -111,7 +129,11 @@ def check_freshness_and_update(tickers, api_keys, data_dir):
             print(f"[{ticker}] CSV not found.")
 
         if needs_rebuild:
-            download_ticker_data(ticker, api_keys, data_dir)
+            # Round-robin which key is tried first to spread load across all keys.
+            offset = download_count % len(api_keys)
+            rotated_keys = api_keys[offset:] + api_keys[:offset]
+            download_ticker_data(ticker, rotated_keys, data_dir)
+            download_count += 1
             # Free-tier Tiingo is rate-limited; small delay helps avoid 429s.
             time.sleep(0.4)
 
